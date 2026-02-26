@@ -2,18 +2,18 @@
 
 A Rust microkernel for GPU-isolated AI inference.
 
-> **Status:** Phase 0 (CPU-Only Shard Model) complete. Phase 1 (GPU Bring-Up) next.
+> **Status:** CPU microkernel complete — boots, runs isolated shards, ships a filesystem. GPU bring-up next.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It currently boots on x86-64 (QEMU/UEFI), runs user-mode shards in ring 3, and includes a read-only ext2 ramdisk filesystem.
 
-## Phase 0 Milestones
+## Features
 
-- [x] **0.1** — Boot (UEFI), serial console, physical memory manager
-- [x] **0.2** — Higher-half kernel, shard creation and destruction
-- [x] **0.3** — IPC channels between shards (synchronous, blocking)
-- [x] **0.4** — Preemptive round-robin scheduler (PIT timer, 4 priority levels)
-- [x] **0.5** — Capability-based access control (grant, revoke, restrict, inspect)
-- [x] **0.6** — Minimal read-only filesystem (ext2 ramdisk, build-time generated)
+- UEFI boot, higher-half kernel, physical + frame allocators
+- Shard isolation — per-shard page tables, ring 3 user code
+- Preemptive round-robin scheduler (4 priority levels, PIT timer at ~1 kHz)
+- IPC channels (single-buffered, blocking receive)
+- Capability-based access control (grant, revoke, restrict, inspect)
+- Read-only ext2 filesystem (64 KiB ramdisk, generated at build time)
 
 ## Quick Start
 
@@ -152,15 +152,15 @@ coconutOS/
 
 ## Roadmap
 
-| Phase | Focus | Status |
-|-------|-------|--------|
-| **0** | CPU-Only Shard Model | Complete |
-| **1** | GPU Bring-Up (AMD RDNA3/CDNA3) | Next |
-| **2** | Multi-Shard GPU Isolation | Planned |
-| **3** | Inference Stack (LLM runtime) | Planned |
-| **4** | Hardening & Multi-Vendor (NVIDIA, Apple) | Planned |
+| Focus | Status |
+|-------|--------|
+| CPU-Only Shard Model | Complete |
+| GPU Bring-Up (AMD RDNA3/CDNA3) | Next |
+| Multi-Shard GPU Isolation | Planned |
+| Inference Stack (LLM runtime) | Planned |
+| Hardening & Multi-Vendor (NVIDIA, Apple) | Planned |
 
-See the [Architecture Document](docs/architecture.md) for the full roadmap.
+See [.claude/ROADMAP.md](.claude/ROADMAP.md) for detailed milestones or the [Architecture Document](docs/architecture.md) for full system design.
 
 ## License
 
