@@ -49,10 +49,14 @@ fn mark_allocated(phys_addr: u64) {
 }
 
 /// Initialize the PMM from the boot info memory map.
+///
+/// Note: `boot_info` must already be accessed via HHDM. The `memory_map_addr`
+/// field is a physical address from the bootloader and needs HHDM translation.
 pub fn init(boot_info: &BootInfo) {
+    let mmap_virt = crate::vmm::phys_to_virt(boot_info.memory_map_addr);
     let memory_map = unsafe {
         core::slice::from_raw_parts(
-            boot_info.memory_map_addr as *const MemoryRegionDescriptor,
+            mmap_virt as *const MemoryRegionDescriptor,
             boot_info.memory_map_count as usize,
         )
     };
@@ -94,6 +98,9 @@ pub fn init(boot_info: &BootInfo) {
         mark_allocated(addr);
         addr += REGION_SIZE;
     }
+
+    // Also reserve the boot page tables region (0x400000-0x405000, in 2 MiB region at 0x400000)
+    mark_allocated(0x400000);
 
     let total_bytes = usable_bytes + reserved_bytes;
     unsafe {
@@ -154,10 +161,10 @@ fn count_free() -> u64 {
     count
 }
 
-const fn align_up(addr: u64, align: u64) -> u64 {
+pub(crate) const fn align_up(addr: u64, align: u64) -> u64 {
     (addr + align - 1) & !(align - 1)
 }
 
-const fn align_down(addr: u64, align: u64) -> u64 {
+pub(crate) const fn align_down(addr: u64, align: u64) -> u64 {
     addr & !(align - 1)
 }

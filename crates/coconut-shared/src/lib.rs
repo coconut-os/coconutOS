@@ -3,6 +3,12 @@
 /// Magic number to validate BootInfo integrity: "CNUT" in ASCII.
 pub const BOOT_INFO_MAGIC: u64 = 0x544E5543;
 
+// Syscall numbers
+/// Terminate the current shard. arg0 = exit code.
+pub const SYS_EXIT: u64 = 0;
+/// Write to serial. arg0 = buffer pointer, arg1 = length.
+pub const SYS_SERIAL_WRITE: u64 = 1;
+
 /// Boot handoff structure passed from bootloader to supervisor.
 ///
 /// Placed in memory by the bootloader, pointer passed in RDI to supervisor entry.

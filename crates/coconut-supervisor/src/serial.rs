@@ -106,6 +106,13 @@ pub fn init() {
     }
 }
 
+/// Write a single byte to the global serial port (for syscall handler use).
+pub fn write_byte(byte: u8) {
+    unsafe {
+        (*(&raw mut SERIAL)).write_byte(byte);
+    }
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {{
