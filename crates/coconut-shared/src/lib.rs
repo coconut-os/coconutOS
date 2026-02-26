@@ -8,6 +8,10 @@ pub const BOOT_INFO_MAGIC: u64 = 0x544E5543;
 pub const SYS_EXIT: u64 = 0;
 /// Write to serial. arg0 = buffer pointer, arg1 = length.
 pub const SYS_SERIAL_WRITE: u64 = 1;
+/// Send on a channel. arg0 = channel_id, arg1 = buf pointer, arg2 = length.
+pub const SYS_CHANNEL_SEND: u64 = 21;
+/// Receive on a channel. arg0 = channel_id, arg1 = buf pointer, arg2 = max length.
+pub const SYS_CHANNEL_RECV: u64 = 22;
 
 /// Boot handoff structure passed from bootloader to supervisor.
 ///

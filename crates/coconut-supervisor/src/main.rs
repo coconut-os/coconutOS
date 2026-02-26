@@ -4,13 +4,15 @@
 
 use core::arch::{asm, naked_asm};
 
+mod channel;
 mod frame;
 mod gdt;
 mod highhalf;
 mod idt;
 mod pmm;
+pub mod scheduler;
 mod serial;
-mod shard;
+pub mod shard;
 mod syscall;
 mod tss;
 mod vmm;
@@ -278,7 +280,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.2.0 booting...");
+    serial_println!("coconutOS supervisor v0.3.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -316,12 +318,25 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
 
     serial_println!();
 
-    // Create and run a test shard.
-    // run() enters ring 3 via sysretq and does not return here.
-    // When the shard calls sys_exit, handle_sys_exit() jumps to
-    // post_shard_return() which calls destroy() and halts.
-    let shard_id = shard::create();
-    shard::run(shard_id);
+    // Create two shards: ping and pong
+    let (ping_start, ping_end) = shard::ping_binary();
+    let ping_id = shard::create(ping_start, ping_end, "ping");
+
+    let (pong_start, pong_end) = shard::pong_binary();
+    let pong_id = shard::create(pong_start, pong_end, "pong");
+
+    // Create IPC channel between them
+    channel::init(0, ping_id, pong_id);
+    serial_println!(
+        "Channel 0: created between shard {} and shard {}",
+        ping_id,
+        pong_id
+    );
+
+    serial_println!();
+
+    // Enter scheduler — runs shards cooperatively until all exit
+    scheduler::run_loop();
 }
 
 pub fn halt() -> ! {

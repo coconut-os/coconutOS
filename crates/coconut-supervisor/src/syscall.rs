@@ -6,6 +6,7 @@
 
 use core::arch::{asm, naked_asm};
 
+use crate::channel;
 use crate::gdt;
 use crate::shard;
 
@@ -65,19 +66,6 @@ pub fn init() {
         wrmsr(IA32_EFER, efer | EFER_SCE);
 
         // STAR: bits [47:32] = kernel CS (for syscall), bits [63:48] = user CS base (for sysret)
-        //
-        // On syscall: CPU loads CS = STAR[47:32], SS = STAR[47:32] + 8
-        //   → CS = 0x08 (kernel code), SS = 0x10 (kernel data)
-        //
-        // On sysret: CPU loads CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
-        //   → With base 0x10: CS = 0x10+16 = 0x20 (user code, entry 4), SS = 0x10+8 = 0x18 (user data, entry 3)
-        //   → But RPL=3 is forced by sysret, so effective CS = 0x23, SS = 0x1B
-        //
-        // Wait — sysret in long mode: CS = STAR[63:48] + 16 with RPL forced to 3
-        //   SS = STAR[63:48] + 8 with RPL forced to 3
-        //   So STAR[63:48] should be 0x10 to get:
-        //     CS = 0x10 + 16 = 0x20 → user code (index 4) with RPL=3 → 0x23
-        //     SS = 0x10 + 8  = 0x18 → user data (index 3) with RPL=3 → 0x1B
         let kernel_cs = gdt::KERNEL_CS as u64;
         let sysret_base = gdt::KERNEL_DS as u64; // 0x10
         let star = (sysret_base << 48) | (kernel_cs << 32);
@@ -160,17 +148,19 @@ unsafe extern "C" fn syscall_entry() {
 /// Rust syscall dispatcher.
 ///
 /// Returns a result value in RAX (0 = success for most calls).
-/// For SYS_EXIT, this function does not return (it longjmps back to shard::run).
+/// For SYS_EXIT, this function does not return normally — it context-switches
+/// to the supervisor via schedule_yield_exit.
 #[no_mangle]
-extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, _a2: u64) -> u64 {
+extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     match nr {
         coconut_shared::SYS_EXIT => {
             shard::handle_sys_exit(a0);
             // does not return
+            unreachable!()
         }
-        coconut_shared::SYS_SERIAL_WRITE => {
-            handle_serial_write(a0, a1)
-        }
+        coconut_shared::SYS_SERIAL_WRITE => handle_serial_write(a0, a1),
+        coconut_shared::SYS_CHANNEL_SEND => handle_channel_send(a0, a1, a2),
+        coconut_shared::SYS_CHANNEL_RECV => handle_channel_recv(a0, a1, a2),
         _ => {
             crate::serial_println!("Unknown syscall: {}", nr);
             u64::MAX // error
@@ -178,16 +168,45 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, _a2: u64) -> u64 {
     }
 }
 
+/// Validate that a user buffer [ptr, ptr+len) lies entirely within
+/// allowed user-space regions: code [0x1000, 0x2000) or stack [0x7FF000, 0x800000).
+fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
+    if len == 0 || len > 4096 {
+        return false;
+    }
+    let end = ptr.wrapping_add(len);
+    if end < ptr {
+        return false; // overflow
+    }
+    // Code region
+    if ptr >= 0x1000 && end <= 0x2000 {
+        return true;
+    }
+    // Stack region
+    if ptr >= 0x7FF000 && end <= 0x800000 {
+        return true;
+    }
+    false
+}
+
+/// Validate that a user buffer for writing lies in the stack region [0x7FF000, 0x800000).
+fn validate_user_write_buf(ptr: u64, len: u64) -> bool {
+    if len == 0 || len > 4096 {
+        return false;
+    }
+    let end = ptr.wrapping_add(len);
+    if end < ptr {
+        return false;
+    }
+    ptr >= 0x7FF000 && end <= 0x800000
+}
+
 /// Handle SYS_SERIAL_WRITE: validate buffer is in shard address range, then print.
 fn handle_serial_write(buf_ptr: u64, len: u64) -> u64 {
-    // Validate: buffer must be within shard code/data region [0x1000, 0x2000)
-    if buf_ptr < 0x1000 || buf_ptr + len > 0x2000 || len > 4096 {
+    if !validate_user_read_buf(buf_ptr, len) {
         return u64::MAX;
     }
 
-    // The buffer is at a user-space virtual address. Since we're in the syscall
-    // handler, CR3 is still the shard's page table (which includes supervisor
-    // mappings). We can read from the user virtual address.
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
 
     for &byte in buf {
@@ -197,5 +216,47 @@ fn handle_serial_write(buf_ptr: u64, len: u64) -> u64 {
         crate::serial::write_byte(byte);
     }
 
-    0 // success
+    0
+}
+
+/// Handle SYS_CHANNEL_SEND: send a message on a channel.
+fn handle_channel_send(channel_id: u64, buf_ptr: u64, len: u64) -> u64 {
+    if channel_id as usize >= channel::MAX_CHANNELS {
+        return u64::MAX;
+    }
+    if len as usize > channel::MAX_MSG_SIZE || len == 0 {
+        return u64::MAX;
+    }
+    if !validate_user_read_buf(buf_ptr, len) {
+        return u64::MAX;
+    }
+
+    let sender = shard::current_shard();
+    channel::send(
+        channel_id as usize,
+        sender,
+        buf_ptr as *const u8,
+        len as usize,
+    )
+}
+
+/// Handle SYS_CHANNEL_RECV: receive a message from a channel (may block).
+fn handle_channel_recv(channel_id: u64, buf_ptr: u64, max_len: u64) -> u64 {
+    if channel_id as usize >= channel::MAX_CHANNELS {
+        return u64::MAX;
+    }
+    if max_len == 0 || max_len as usize > channel::MAX_MSG_SIZE {
+        return u64::MAX;
+    }
+    if !validate_user_write_buf(buf_ptr, max_len) {
+        return u64::MAX;
+    }
+
+    let receiver = shard::current_shard();
+    channel::recv(
+        channel_id as usize,
+        receiver,
+        buf_ptr as *mut u8,
+        max_len as usize,
+    )
 }
