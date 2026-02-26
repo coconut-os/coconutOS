@@ -11,6 +11,8 @@ use uefi::fs::FileSystem;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::println;
+use uefi::system;
+use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
 
 use coconut_shared::{BootInfo, MemoryRegionDescriptor, MemoryRegionType, BOOT_INFO_MAGIC};
 
@@ -64,14 +66,22 @@ fn main() -> Status {
     };
 
     // -----------------------------------------------------------------------
-    // 4. Exit boot services — no more UEFI calls after this point
+    // 4. Find ACPI RSDP before exiting boot services
+    // -----------------------------------------------------------------------
+    let acpi_rsdp_addr = find_acpi_rsdp();
+    if acpi_rsdp_addr != 0 {
+        println!("coconut-boot: ACPI RSDP at {:#x}", acpi_rsdp_addr);
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Exit boot services — no more UEFI calls after this point
     // -----------------------------------------------------------------------
     println!("coconut-boot: exiting boot services, jumping to supervisor...");
 
     let memory_map = unsafe { boot::exit_boot_services(MemoryType::LOADER_DATA) };
 
     // -----------------------------------------------------------------------
-    // 5. Build the BootInfo struct from the UEFI memory map
+    // 6. Build the BootInfo struct from the UEFI memory map
     // -----------------------------------------------------------------------
     let mut mmap_count: u32 = 0;
     for desc in memory_map.entries() {
@@ -115,17 +125,18 @@ fn main() -> Status {
             boot_info_ptr,
             BootInfo {
                 magic: BOOT_INFO_MAGIC,
-                version: 1,
+                version: 2,
                 memory_map_count: mmap_count,
                 memory_map_addr: mmap_ptr as u64,
                 supervisor_phys_base: SUPERVISOR_LOAD_ADDR,
                 supervisor_size: total_loaded as u64,
+                acpi_rsdp_addr,
             },
         );
     }
 
     // -----------------------------------------------------------------------
-    // 6. Jump to the supervisor entry point
+    // 7. Jump to the supervisor entry point
     //
     // Must use inline asm because the UEFI target uses Microsoft x64 ABI
     // (first arg in RCX) but the supervisor expects System V ABI (RDI).
@@ -201,6 +212,23 @@ fn load_elf_segments(elf_data: &[u8], elf_info: &elf::ElfInfo) -> (usize, usize)
     }
 
     (total_loaded, page_count)
+}
+
+/// Search UEFI configuration tables for the ACPI RSDP address.
+/// Prefers ACPI 2.0 (XSDT) over ACPI 1.0 (RSDT). Returns 0 if not found.
+fn find_acpi_rsdp() -> u64 {
+    // with_config_table takes Fn (not FnMut), so return the address directly
+    system::with_config_table(|config_table| {
+        let mut acpi1_addr: u64 = 0;
+        for entry in config_table {
+            if entry.guid == ACPI2_GUID {
+                return entry.address as u64;
+            } else if entry.guid == ACPI_GUID {
+                acpi1_addr = entry.address as u64;
+            }
+        }
+        acpi1_addr
+    })
 }
 
 /// Translate UEFI memory types to our memory region types.

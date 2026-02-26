@@ -72,7 +72,8 @@ echo "    Image: $IMG"
 echo ""
 
 qemu-system-x86_64 \
-    -machine q35 \
+    -machine q35,kernel-irqchip=split \
+    -device intel-iommu,intremap=on \
     -m 128M \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive format=raw,file="$IMG" \

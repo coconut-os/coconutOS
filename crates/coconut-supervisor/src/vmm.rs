@@ -17,6 +17,8 @@ static mut HIGHER_HALF_ACTIVE: bool = false;
 pub const PTE_PRESENT: u64 = 1 << 0;
 pub const PTE_WRITABLE: u64 = 1 << 1;
 pub const PTE_USER: u64 = 1 << 2;
+pub const PTE_WRITE_THROUGH: u64 = 1 << 3;
+pub const PTE_CACHE_DISABLE: u64 = 1 << 4;
 pub const PTE_PAGE_SIZE_2M: u64 = 1 << 7; // PS bit for 2 MiB pages at PD level
 pub const PTE_NO_EXECUTE: u64 = 1 << 63;
 
@@ -224,5 +226,47 @@ pub fn read_cr3() -> u64 {
 pub fn write_cr3(cr3: u64) {
     unsafe {
         asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MMIO mapping — bump allocator for device register regions
+// ---------------------------------------------------------------------------
+
+/// Virtual base for MMIO mappings. Uses PDPT_kern[511] (0xFFFFFFFFC0000000),
+/// which is empty — the boot trampoline only populates PDPT_kern[510] for
+/// the kernel text/data 1 GiB window. This avoids conflicting with existing
+/// 2 MiB page entries in PD_kern.
+const MMIO_VIRT_BASE: u64 = 0xFFFF_FFFF_C000_0000;
+
+/// Next available virtual address for MMIO mappings.
+static mut MMIO_NEXT: u64 = MMIO_VIRT_BASE;
+
+/// Map a physical MMIO region into kernel virtual address space.
+///
+/// Returns a virtual pointer to the start of the mapped region (preserving
+/// sub-page offset if phys_base is not page-aligned). Pages are mapped with
+/// PCD+PWT (uncacheable) and NX (no execute).
+pub fn map_mmio(phys_base: u64, size: u64) -> *mut u8 {
+    let offset_in_page = phys_base & (PAGE_4K - 1);
+    let aligned_phys = phys_base & !(PAGE_4K - 1);
+    let aligned_size = (size + offset_in_page + PAGE_4K - 1) & !(PAGE_4K - 1);
+
+    let pml4_phys = crate::highhalf::supervisor_pml4();
+
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXECUTE | PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
+
+    unsafe {
+        let virt_base = *(&raw const MMIO_NEXT);
+
+        let mut offset = 0u64;
+        while offset < aligned_size {
+            map_4k(pml4_phys, virt_base + offset, aligned_phys + offset, flags);
+            offset += PAGE_4K;
+        }
+
+        *(&raw mut MMIO_NEXT) = virt_base + aligned_size;
+
+        (virt_base + offset_in_page) as *mut u8
     }
 }

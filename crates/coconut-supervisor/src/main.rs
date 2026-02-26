@@ -4,6 +4,7 @@
 
 use core::arch::{asm, naked_asm};
 
+mod acpi;
 pub mod capability;
 mod channel;
 mod ext2;
@@ -12,6 +13,8 @@ mod fs;
 mod gdt;
 mod highhalf;
 mod idt;
+mod iommu;
+mod pci;
 pub mod pic;
 pub mod pit;
 mod pmm;
@@ -285,7 +288,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.6.0 booting...");
+    serial_println!("coconutOS supervisor v1.1.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -328,6 +331,15 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     // Initialize PIT (~1ms periodic timer on channel 0)
     pit::init();
     serial_println!("PIT: configured (~1ms periodic, channel 0)");
+
+    // Discover ACPI tables (RSDP is in low memory, accessible via HHDM)
+    acpi::init(boot_info.acpi_rsdp_addr);
+
+    // Enumerate PCI devices (uses I/O ports, always available)
+    pci::init();
+
+    // Set up IOMMU if DMAR table present (requires acpi + vmm::map_mmio)
+    iommu::init();
 
     // Initialize filesystem
     fs::init();

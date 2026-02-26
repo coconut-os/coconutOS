@@ -55,7 +55,7 @@ pub const RIGHT_CHANNEL_GRANT: u16 = 1 << 2;
 pub struct BootInfo {
     /// Must equal BOOT_INFO_MAGIC.
     pub magic: u64,
-    /// Protocol version (currently 1).
+    /// Protocol version (currently 2).
     pub version: u32,
     /// Number of entries in the memory map.
     pub memory_map_count: u32,
@@ -65,6 +65,8 @@ pub struct BootInfo {
     pub supervisor_phys_base: u64,
     /// Size of the supervisor image in bytes (all loaded segments).
     pub supervisor_size: u64,
+    /// Physical address of ACPI RSDP (0 if not found).
+    pub acpi_rsdp_addr: u64,
 }
 
 /// Describes a contiguous physical memory region.
