@@ -1,6 +1,6 @@
 # coconut-shared
 
-ABI-stable types shared between the bootloader and supervisor. This crate defines the boot handoff protocol and syscall number registry.
+ABI-stable types shared between the bootloader and supervisor. This crate defines the boot handoff protocol, syscall number registry, and capability constants.
 
 ## Purpose
 
@@ -52,9 +52,35 @@ The bootloader translates the UEFI memory map into this format before exiting bo
 |----------|-------|-------------|
 | `SYS_EXIT` | 0 | Terminate shard, arg0 = exit code |
 | `SYS_SERIAL_WRITE` | 1 | Write to serial, arg0 = buffer ptr, arg1 = length |
+| `SYS_CAP_GRANT` | 11 | Grant capability copy to another shard |
+| `SYS_CAP_REVOKE` | 12 | Revoke a capability from current shard |
+| `SYS_CAP_RESTRICT` | 13 | Restrict rights on a capability (monotonic AND) |
+| `SYS_CAP_INSPECT` | 14 | Inspect capability (returns packed type/resource/rights) |
 | `SYS_CHANNEL_SEND` | 21 | Send IPC message |
 | `SYS_CHANNEL_RECV` | 22 | Receive IPC message (blocking) |
+| `SYS_FS_OPEN` | 30 | Open file by path, returns fd |
+| `SYS_FS_READ` | 31 | Read from open file, returns bytes read |
+| `SYS_FS_STAT` | 32 | Get file size |
+| `SYS_FS_CLOSE` | 33 | Close open file |
 | `SYS_YIELD` | 62 | Cooperative yield to scheduler |
+
+## Capability Type Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `CAP_CHANNEL` | 1 | IPC channel capability |
+| `CAP_SHARD` | 2 | Shard management capability |
+| `CAP_MEMORY` | 3 | Memory region capability |
+
+## Channel Rights Constants
+
+Bitmask values for channel capability rights:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `RIGHT_CHANNEL_SEND` | 1 | Permission to send on a channel |
+| `RIGHT_CHANNEL_RECV` | 2 | Permission to receive on a channel |
+| `RIGHT_CHANNEL_GRANT` | 4 | Permission to grant the capability to another shard |
 
 ## Constraints
 

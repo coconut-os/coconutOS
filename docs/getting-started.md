@@ -66,19 +66,31 @@ This single script builds both crates and launches QEMU.
 On a successful boot you should see output like:
 
 ```
-[BOOT] coconutOS bootloader starting
-[BOOT] Loading supervisor ELF...
-[SUPER] coconutOS supervisor starting
-[SUPER] PMM: initialized, N regions free
-[SUPER] GDT loaded
-[SUPER] IDT loaded
-[SUPER] PIC initialized
-[SUPER] PIT initialized (1 kHz)
-[SUPER] Syscall MSRs configured
-[SUPER] Creating shards...
+coconutOS supervisor v0.6.0 booting...
+Higher-half: page tables built, CR3 switched
+GDT: loaded (7 entries, TSS active)
+IDT: loaded (256 entries, higher-half)
+Syscall: configured (LSTAR, STAR, SFMASK)
+PIC: remapped (IRQ 0-15 -> vectors 32-47)
+PIT: configured (~1ms periodic, channel 0)
+Filesystem: ext2 ramdisk, 64 KiB, 1 file
+
+Shard 0: creating (fs-reader)...
+
+Scheduler: starting run loop
+Scheduler: switching to shard 0
+FS: open "/hello.txt" -> fd 0 (22 bytes)
+FS: read fd 0, 22 bytes
+Hello from coconutFS!
+FS: close fd 0
+Shard 0: sys_exit(0)
+Shard 0: destroyed (memory zeroed, frames freed)
+
+coconutOS supervisor v0.6.0: all shards completed.
+Halting.
 ```
 
-Followed by interleaved shard output and timer ticks. The system halts cleanly after shards exit.
+The fs-reader shard opens `/hello.txt` from the ext2 ramdisk, reads its contents, prints them to serial, and exits. The system halts cleanly after all shards complete.
 
 ## Next Steps
 
