@@ -8,6 +8,7 @@ use core::arch::{asm, naked_asm};
 
 use crate::capability;
 use crate::channel;
+use crate::fs;
 use crate::gdt;
 use crate::scheduler;
 use crate::shard;
@@ -179,6 +180,10 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
             let caller = shard::current_shard();
             capability::inspect(caller, a0 as usize)
         }
+        coconut_shared::SYS_FS_OPEN => fs::handle_fs_open(a0, a1),
+        coconut_shared::SYS_FS_READ => fs::handle_fs_read(a0, a1, a2),
+        coconut_shared::SYS_FS_STAT => fs::handle_fs_stat(a0),
+        coconut_shared::SYS_FS_CLOSE => fs::handle_fs_close(a0),
         coconut_shared::SYS_YIELD => {
             scheduler::handle_sys_yield();
             0

@@ -12,6 +12,16 @@ pub const SYS_SERIAL_WRITE: u64 = 1;
 pub const SYS_CHANNEL_SEND: u64 = 21;
 /// Receive on a channel. arg0 = channel_id, arg1 = buf pointer, arg2 = max length.
 pub const SYS_CHANNEL_RECV: u64 = 22;
+// Filesystem syscalls
+/// Open a file by path. a0=path_ptr, a1=path_len. Returns fd.
+pub const SYS_FS_OPEN: u64 = 30;
+/// Read from an open file. a0=fd, a1=buf_ptr, a2=max_len. Returns bytes_read.
+pub const SYS_FS_READ: u64 = 31;
+/// Get file size. a0=fd. Returns file_size.
+pub const SYS_FS_STAT: u64 = 32;
+/// Close an open file. a0=fd. Returns 0.
+pub const SYS_FS_CLOSE: u64 = 33;
+
 /// Yield the current time slice voluntarily.
 pub const SYS_YIELD: u64 = 62;
 

@@ -95,150 +95,68 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
 pub static mut CURRENT_SHARD: usize = usize::MAX;
 
 // ---------------------------------------------------------------------------
-// Embedded shard binaries — capability demo shards
+// Embedded shard binary — filesystem demo shard
 // ---------------------------------------------------------------------------
 
-// cap_sender: Send "Hello from A\n" on channel 0, then exit.
-// Shard A has SEND right on channel 0.
+// fs_reader: Open /hello.txt, read contents, print via serial, close, exit.
 core::arch::global_asm!(
     ".section .rodata",
     ".balign 16",
-    ".global _cap_sender_start",
-    ".global _cap_sender_end",
-    "_cap_sender_start:",
-
-    // Copy message to stack (writable region for SYS_CHANNEL_SEND read buf validation)
-    // Message: "Hello from A\n" = 13 bytes
-    // Stack top = 0x800000, we'll use 0x7FFF00 area
-    "mov rsp, 0x800000",
-
-    // Load message onto stack
-    "lea rsi, [rip + 2f]",          // source: message in code page
-    "mov rdi, 0x7FFF00",            // dest: stack area
-    "mov rcx, 13",
-    "1:",
-    "mov al, [rsi]",
-    "mov [rdi], al",
-    "inc rsi",
-    "inc rdi",
-    "dec rcx",
-    "jnz 1b",
-
-    // SYS_CHANNEL_SEND(channel_id=0, buf=0x7FFF00, len=13)
-    "xor edi, edi",                 // channel_id = 0
-    "mov rsi, 0x7FFF00",            // buf
-    "mov rdx, 13",                  // len
-    "mov rax, 21",                  // SYS_CHANNEL_SEND
-    "syscall",
-
-    // SYS_EXIT(0)
-    "xor edi, edi",
-    "mov rax, 0",
-    "syscall",
-    "3: hlt",
-    "jmp 3b",
-
-    // String data (in code page, used as source for copy)
-    "2: .ascii \"Hello from A\\n\"",
-
-    "_cap_sender_end:",
-);
-
-// cap_receiver: Recv on channel 0, print message, attempt send (denied), print denial, exit.
-// Shard B has RECV right on channel 0 (but NOT SEND).
-core::arch::global_asm!(
-    ".section .rodata",
-    ".balign 16",
-    ".global _cap_receiver_start",
-    ".global _cap_receiver_end",
-    "_cap_receiver_start:",
+    ".global _fs_reader_start",
+    ".global _fs_reader_end",
+    "_fs_reader_start:",
 
     "mov rsp, 0x800000",
 
-    // SYS_CHANNEL_RECV(channel_id=0, buf=0x7FFF00, max_len=256)
-    "xor edi, edi",                 // channel_id = 0
-    "mov rsi, 0x7FFF00",            // buf (in stack page, writable)
+    // SYS_FS_OPEN("/hello.txt", 10) -> fd in rax
+    "lea rdi, [rip + 1f]",          // path in code page
+    "mov rsi, 10",                  // path_len = 10 ("/hello.txt")
+    "mov rax, 30",                  // SYS_FS_OPEN
+    "syscall",
+    "mov r12, rax",                 // save fd (r12 preserved across syscalls)
+
+    // SYS_FS_READ(fd, 0x7FFF00, 256) -> bytes_read in rax
+    "mov rdi, r12",                 // fd
+    "mov rsi, 0x7FFF00",            // buffer in stack page
     "mov rdx, 256",                 // max_len
-    "mov rax, 22",                  // SYS_CHANNEL_RECV
+    "mov rax, 31",                  // SYS_FS_READ
     "syscall",
+    "mov r13, rax",                 // save bytes_read
 
-    // RAX = bytes received. Print the received message via SYS_SERIAL_WRITE
-    "mov rsi, rax",                 // len = received bytes
+    // SYS_SERIAL_WRITE(0x7FFF00, bytes_read) -> prints file contents
     "mov rdi, 0x7FFF00",            // buf
+    "mov rsi, r13",                 // len = bytes_read
     "mov rax, 1",                   // SYS_SERIAL_WRITE
     "syscall",
 
-    // Attempt SYS_CHANNEL_SEND on channel 0 (should be DENIED — no SEND right)
-    // Copy a small message to stack first
-    "lea rsi, [rip + 3f]",          // source
-    "mov rdi, 0x7FFE00",            // dest in stack
-    "mov rcx, 10",
-    "1:",
-    "mov al, [rsi]",
-    "mov [rdi], al",
-    "inc rsi",
-    "inc rdi",
-    "dec rcx",
-    "jnz 1b",
-
-    "xor edi, edi",                 // channel_id = 0
-    "mov rsi, 0x7FFE00",            // buf
-    "mov rdx, 10",                  // len
-    "mov rax, 21",                  // SYS_CHANNEL_SEND
-    "syscall",
-
-    // RAX should be u64::MAX (denied). Print confirmation.
-    // Print "Cap denied OK\n" via SYS_SERIAL_WRITE
-    "lea rsi, [rip + 4f]",          // source
-    "mov rdi, 0x7FFD00",            // dest in stack
-    "mov rcx, 14",
-    "2:",
-    "mov al, [rsi]",
-    "mov [rdi], al",
-    "inc rsi",
-    "inc rdi",
-    "dec rcx",
-    "jnz 2b",
-
-    "mov rdi, 0x7FFD00",            // buf
-    "mov rsi, 14",                  // len
-    "mov rax, 1",                   // SYS_SERIAL_WRITE
+    // SYS_FS_CLOSE(fd)
+    "mov rdi, r12",                 // fd
+    "mov rax, 33",                  // SYS_FS_CLOSE
     "syscall",
 
     // SYS_EXIT(0)
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
-    "5: hlt",
-    "jmp 5b",
+    "2: hlt",
+    "jmp 2b",
 
     // String data
-    "3: .ascii \"Denied msg\"",
-    "4: .ascii \"Cap denied OK\\n\"",
+    "1: .ascii \"/hello.txt\"",
 
-    "_cap_receiver_end:",
+    "_fs_reader_end:",
 );
 
 extern "C" {
-    static _cap_sender_start: u8;
-    static _cap_sender_end: u8;
-    static _cap_receiver_start: u8;
-    static _cap_receiver_end: u8;
+    static _fs_reader_start: u8;
+    static _fs_reader_end: u8;
 }
 
-/// Get the cap-sender shard binary (start, end) pointers.
-pub fn cap_sender_binary() -> (*const u8, *const u8) {
+/// Get the fs-reader shard binary (start, end) pointers.
+pub fn fs_reader_binary() -> (*const u8, *const u8) {
     (
-        (&raw const _cap_sender_start) as *const u8,
-        (&raw const _cap_sender_end) as *const u8,
-    )
-}
-
-/// Get the cap-receiver shard binary (start, end) pointers.
-pub fn cap_receiver_binary() -> (*const u8, *const u8) {
-    (
-        (&raw const _cap_receiver_start) as *const u8,
-        (&raw const _cap_receiver_end) as *const u8,
+        (&raw const _fs_reader_start) as *const u8,
+        (&raw const _fs_reader_end) as *const u8,
     )
 }
 
