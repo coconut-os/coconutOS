@@ -1,0 +1,8 @@
+[package]
+name = "coconut-boot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+coconut-shared = { path = "../coconut-shared" }
+uefi = { version = "0.33", features = ["panic_handler", "alloc", "global_allocator"] }

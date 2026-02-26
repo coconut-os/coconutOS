@@ -1,0 +1,18 @@
+[build]
+# Default target for the supervisor
+# Override per-crate via cargo build -p <crate> --target <target>
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "code-model=kernel",
+    "-C", "relocation-model=static",
+    "-C", "link-arg=-Tcrates/coconut-supervisor/linker.ld",
+    "-C", "link-arg=--gc-sections",
+]
+
+[target.x86_64-unknown-uefi]
+rustflags = []
+
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]

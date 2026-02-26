@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/coconut-boot",
+    "crates/coconut-supervisor",
+    "crates/coconut-shared",
+]
