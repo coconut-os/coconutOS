@@ -15,6 +15,27 @@ pub const SYS_CHANNEL_RECV: u64 = 22;
 /// Yield the current time slice voluntarily.
 pub const SYS_YIELD: u64 = 62;
 
+// Capability syscalls
+/// Grant a capability copy to another shard. a0=handle, a1=target_shard, a2=new_rights.
+pub const SYS_CAP_GRANT: u64 = 11;
+/// Revoke a capability from the current shard. a0=handle.
+pub const SYS_CAP_REVOKE: u64 = 12;
+/// Restrict rights on a capability (monotonic reduction). a0=handle, a1=new_rights.
+pub const SYS_CAP_RESTRICT: u64 = 13;
+/// Inspect a capability. a0=handle. Returns packed (cap_type<<48 | resource_id<<16 | rights).
+pub const SYS_CAP_INSPECT: u64 = 14;
+
+// Capability types
+pub const CAP_CHANNEL: u8 = 1;
+pub const CAP_SHARD: u8 = 2;
+pub const CAP_MEMORY: u8 = 3;
+// 4-8 reserved for GPU, VRAM, IRQ, IO, TIMER
+
+// Channel capability rights (bitmask)
+pub const RIGHT_CHANNEL_SEND: u16 = 1 << 0;
+pub const RIGHT_CHANNEL_RECV: u16 = 1 << 1;
+pub const RIGHT_CHANNEL_GRANT: u16 = 1 << 2;
+
 /// Boot handoff structure passed from bootloader to supervisor.
 ///
 /// Placed in memory by the bootloader, pointer passed in RDI to supervisor entry.

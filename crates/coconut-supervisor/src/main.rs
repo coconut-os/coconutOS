@@ -4,6 +4,7 @@
 
 use core::arch::{asm, naked_asm};
 
+pub mod capability;
 mod channel;
 mod frame;
 mod gdt;
@@ -282,7 +283,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.4.0 booting...");
+    serial_println!("coconutOS supervisor v0.5.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -328,12 +329,20 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
 
     serial_println!();
 
-    // Create two counter shards for preemptive scheduling demo
-    let (a_start, a_end) = shard::counter_a_binary();
-    shard::create(a_start, a_end, "counter-A", shard::Priority::Normal);
+    // Create capability demo shards
+    let (a_start, a_end) = shard::cap_sender_binary();
+    shard::create(a_start, a_end, "cap-sender", shard::Priority::Normal);
 
-    let (b_start, b_end) = shard::counter_b_binary();
-    shard::create(b_start, b_end, "counter-B", shard::Priority::Normal);
+    let (b_start, b_end) = shard::cap_receiver_binary();
+    shard::create(b_start, b_end, "cap-receiver", shard::Priority::Normal);
+
+    // Set up IPC channel 0: shard 0 <-> shard 1
+    channel::init(0, 0, 1);
+    serial_println!("Channel 0: shard 0 <-> shard 1");
+
+    // Grant capabilities: sender gets SEND, receiver gets RECV
+    capability::grant_to_shard(0, coconut_shared::CAP_CHANNEL, 0, coconut_shared::RIGHT_CHANNEL_SEND);
+    capability::grant_to_shard(1, coconut_shared::CAP_CHANNEL, 0, coconut_shared::RIGHT_CHANNEL_RECV);
 
     serial_println!();
 

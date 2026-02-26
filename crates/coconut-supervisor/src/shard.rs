@@ -21,6 +21,15 @@ pub const SHARD_STACK_VADDR: u64 = 0x7FF000; // one 4K page, stack top = 0x80000
 pub const SHARD_INITIAL_RSP: u64 = 0x800000;
 
 pub const MAX_SHARDS: usize = 4;
+pub const MAX_CAPS_PER_SHARD: usize = 16;
+
+#[derive(Clone, Copy)]
+pub struct CapEntry {
+    pub valid: bool,
+    pub cap_type: u8,
+    pub resource_id: u32,
+    pub rights: u16,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ShardState {
@@ -57,6 +66,8 @@ pub struct ShardDescriptor {
     pub saved_kernel_rsp: u64,
     /// Channel ID this shard is blocked on (usize::MAX = none).
     pub blocked_on_channel: usize,
+    /// Capability table for this shard.
+    pub caps: [CapEntry; MAX_CAPS_PER_SHARD],
 }
 
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
@@ -71,6 +82,12 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
         kernel_stack_top: 0,
         saved_kernel_rsp: 0,
         blocked_on_channel: usize::MAX,
+        caps: [CapEntry {
+            valid: false,
+            cap_type: 0,
+            resource_id: 0,
+            rights: 0,
+        }; MAX_CAPS_PER_SHARD],
     }
 }; MAX_SHARDS];
 
@@ -78,105 +95,150 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
 pub static mut CURRENT_SHARD: usize = usize::MAX;
 
 // ---------------------------------------------------------------------------
-// Embedded shard binaries — counter shards for preemptive scheduling demo
+// Embedded shard binaries — capability demo shards
 // ---------------------------------------------------------------------------
 
-// Counter A: busy-loop + print "Shard A: tick\n" × 5, then exit
+// cap_sender: Send "Hello from A\n" on channel 0, then exit.
+// Shard A has SEND right on channel 0.
 core::arch::global_asm!(
     ".section .rodata",
     ".balign 16",
-    ".global _counter_a_start",
-    ".global _counter_a_end",
-    "_counter_a_start:",
+    ".global _cap_sender_start",
+    ".global _cap_sender_end",
+    "_cap_sender_start:",
 
-    // r12 = tick counter (callee-saved, survives syscall + preemption)
-    "mov r12, 5",
+    // Copy message to stack (writable region for SYS_CHANNEL_SEND read buf validation)
+    // Message: "Hello from A\n" = 13 bytes
+    // Stack top = 0x800000, we'll use 0x7FFF00 area
+    "mov rsp, 0x800000",
 
-    // --- Tick loop ---
+    // Load message onto stack
+    "lea rsi, [rip + 2f]",          // source: message in code page
+    "mov rdi, 0x7FFF00",            // dest: stack area
+    "mov rcx, 13",
     "1:",
-    // Busy loop: burn CPU so the 1ms timer can preempt us
-    "mov rcx, 0x500000",
-    "2:",
+    "mov al, [rsi]",
+    "mov [rdi], al",
+    "inc rsi",
+    "inc rdi",
     "dec rcx",
-    "jnz 2b",
-
-    // Print "Shard A: tick\n" via SYS_SERIAL_WRITE(buf, len)
-    "lea rdi, [rip + 3f]",
-    "mov rsi, 14",
-    "mov rax, 1",                // SYS_SERIAL_WRITE
-    "syscall",
-
-    "dec r12",
     "jnz 1b",
 
-    // --- SYS_EXIT(0) ---
+    // SYS_CHANNEL_SEND(channel_id=0, buf=0x7FFF00, len=13)
+    "xor edi, edi",                 // channel_id = 0
+    "mov rsi, 0x7FFF00",            // buf
+    "mov rdx, 13",                  // len
+    "mov rax, 21",                  // SYS_CHANNEL_SEND
+    "syscall",
+
+    // SYS_EXIT(0)
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
-    "4: hlt",
-    "jmp 4b",
+    "3: hlt",
+    "jmp 3b",
 
-    // String data (within code page, readable by SYS_SERIAL_WRITE)
-    "3: .ascii \"Shard A: tick\\n\"",
+    // String data (in code page, used as source for copy)
+    "2: .ascii \"Hello from A\\n\"",
 
-    "_counter_a_end:",
+    "_cap_sender_end:",
 );
 
-// Counter B: busy-loop + print "Shard B: tick\n" × 5, then exit
+// cap_receiver: Recv on channel 0, print message, attempt send (denied), print denial, exit.
+// Shard B has RECV right on channel 0 (but NOT SEND).
 core::arch::global_asm!(
     ".section .rodata",
     ".balign 16",
-    ".global _counter_b_start",
-    ".global _counter_b_end",
-    "_counter_b_start:",
+    ".global _cap_receiver_start",
+    ".global _cap_receiver_end",
+    "_cap_receiver_start:",
 
-    "mov r12, 5",
+    "mov rsp, 0x800000",
 
+    // SYS_CHANNEL_RECV(channel_id=0, buf=0x7FFF00, max_len=256)
+    "xor edi, edi",                 // channel_id = 0
+    "mov rsi, 0x7FFF00",            // buf (in stack page, writable)
+    "mov rdx, 256",                 // max_len
+    "mov rax, 22",                  // SYS_CHANNEL_RECV
+    "syscall",
+
+    // RAX = bytes received. Print the received message via SYS_SERIAL_WRITE
+    "mov rsi, rax",                 // len = received bytes
+    "mov rdi, 0x7FFF00",            // buf
+    "mov rax, 1",                   // SYS_SERIAL_WRITE
+    "syscall",
+
+    // Attempt SYS_CHANNEL_SEND on channel 0 (should be DENIED — no SEND right)
+    // Copy a small message to stack first
+    "lea rsi, [rip + 3f]",          // source
+    "mov rdi, 0x7FFE00",            // dest in stack
+    "mov rcx, 10",
     "1:",
-    "mov rcx, 0x500000",
+    "mov al, [rsi]",
+    "mov [rdi], al",
+    "inc rsi",
+    "inc rdi",
+    "dec rcx",
+    "jnz 1b",
+
+    "xor edi, edi",                 // channel_id = 0
+    "mov rsi, 0x7FFE00",            // buf
+    "mov rdx, 10",                  // len
+    "mov rax, 21",                  // SYS_CHANNEL_SEND
+    "syscall",
+
+    // RAX should be u64::MAX (denied). Print confirmation.
+    // Print "Cap denied OK\n" via SYS_SERIAL_WRITE
+    "lea rsi, [rip + 4f]",          // source
+    "mov rdi, 0x7FFD00",            // dest in stack
+    "mov rcx, 14",
     "2:",
+    "mov al, [rsi]",
+    "mov [rdi], al",
+    "inc rsi",
+    "inc rdi",
     "dec rcx",
     "jnz 2b",
 
-    "lea rdi, [rip + 3f]",
-    "mov rsi, 14",
-    "mov rax, 1",
+    "mov rdi, 0x7FFD00",            // buf
+    "mov rsi, 14",                  // len
+    "mov rax, 1",                   // SYS_SERIAL_WRITE
     "syscall",
 
-    "dec r12",
-    "jnz 1b",
-
+    // SYS_EXIT(0)
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
-    "4: hlt",
-    "jmp 4b",
+    "5: hlt",
+    "jmp 5b",
 
-    "3: .ascii \"Shard B: tick\\n\"",
+    // String data
+    "3: .ascii \"Denied msg\"",
+    "4: .ascii \"Cap denied OK\\n\"",
 
-    "_counter_b_end:",
+    "_cap_receiver_end:",
 );
 
 extern "C" {
-    static _counter_a_start: u8;
-    static _counter_a_end: u8;
-    static _counter_b_start: u8;
-    static _counter_b_end: u8;
+    static _cap_sender_start: u8;
+    static _cap_sender_end: u8;
+    static _cap_receiver_start: u8;
+    static _cap_receiver_end: u8;
 }
 
-/// Get the counter-A shard binary (start, end) pointers.
-pub fn counter_a_binary() -> (*const u8, *const u8) {
+/// Get the cap-sender shard binary (start, end) pointers.
+pub fn cap_sender_binary() -> (*const u8, *const u8) {
     (
-        (&raw const _counter_a_start) as *const u8,
-        (&raw const _counter_a_end) as *const u8,
+        (&raw const _cap_sender_start) as *const u8,
+        (&raw const _cap_sender_end) as *const u8,
     )
 }
 
-/// Get the counter-B shard binary (start, end) pointers.
-pub fn counter_b_binary() -> (*const u8, *const u8) {
+/// Get the cap-receiver shard binary (start, end) pointers.
+pub fn cap_receiver_binary() -> (*const u8, *const u8) {
     (
-        (&raw const _counter_b_start) as *const u8,
-        (&raw const _counter_b_end) as *const u8,
+        (&raw const _cap_receiver_start) as *const u8,
+        (&raw const _cap_receiver_end) as *const u8,
     )
 }
 
@@ -302,6 +364,9 @@ pub fn destroy(id: usize) {
         shard.state == ShardState::Exited,
         "shard not in exited state"
     );
+
+    // 0. Clear all capabilities for this shard
+    crate::capability::clear_shard(id);
 
     // 1. Switch to supervisor page tables (should already be, but be safe)
     vmm::write_cr3(highhalf::supervisor_pml4());

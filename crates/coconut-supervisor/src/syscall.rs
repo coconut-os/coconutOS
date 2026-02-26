@@ -6,6 +6,7 @@
 
 use core::arch::{asm, naked_asm};
 
+use crate::capability;
 use crate::channel;
 use crate::gdt;
 use crate::scheduler;
@@ -162,6 +163,22 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         coconut_shared::SYS_SERIAL_WRITE => handle_serial_write(a0, a1),
         coconut_shared::SYS_CHANNEL_SEND => handle_channel_send(a0, a1, a2),
         coconut_shared::SYS_CHANNEL_RECV => handle_channel_recv(a0, a1, a2),
+        coconut_shared::SYS_CAP_GRANT => {
+            let caller = shard::current_shard();
+            capability::grant_copy(caller, a0 as usize, a1 as usize, a2 as u16)
+        }
+        coconut_shared::SYS_CAP_REVOKE => {
+            let caller = shard::current_shard();
+            capability::revoke(caller, a0 as usize)
+        }
+        coconut_shared::SYS_CAP_RESTRICT => {
+            let caller = shard::current_shard();
+            capability::restrict(caller, a0 as usize, a1 as u16)
+        }
+        coconut_shared::SYS_CAP_INSPECT => {
+            let caller = shard::current_shard();
+            capability::inspect(caller, a0 as usize)
+        }
         coconut_shared::SYS_YIELD => {
             scheduler::handle_sys_yield();
             0
@@ -226,6 +243,21 @@ fn handle_serial_write(buf_ptr: u64, len: u64) -> u64 {
 
 /// Handle SYS_CHANNEL_SEND: send a message on a channel.
 fn handle_channel_send(channel_id: u64, buf_ptr: u64, len: u64) -> u64 {
+    let sender = shard::current_shard();
+    if !capability::check(
+        sender,
+        coconut_shared::CAP_CHANNEL,
+        channel_id as u32,
+        coconut_shared::RIGHT_CHANNEL_SEND,
+    ) {
+        crate::serial_println!(
+            "Shard {}: capability denied (channel {} send)",
+            sender,
+            channel_id
+        );
+        return u64::MAX;
+    }
+
     if channel_id as usize >= channel::MAX_CHANNELS {
         return u64::MAX;
     }
@@ -235,8 +267,6 @@ fn handle_channel_send(channel_id: u64, buf_ptr: u64, len: u64) -> u64 {
     if !validate_user_read_buf(buf_ptr, len) {
         return u64::MAX;
     }
-
-    let sender = shard::current_shard();
     channel::send(
         channel_id as usize,
         sender,
@@ -247,6 +277,21 @@ fn handle_channel_send(channel_id: u64, buf_ptr: u64, len: u64) -> u64 {
 
 /// Handle SYS_CHANNEL_RECV: receive a message from a channel (may block).
 fn handle_channel_recv(channel_id: u64, buf_ptr: u64, max_len: u64) -> u64 {
+    let receiver = shard::current_shard();
+    if !capability::check(
+        receiver,
+        coconut_shared::CAP_CHANNEL,
+        channel_id as u32,
+        coconut_shared::RIGHT_CHANNEL_RECV,
+    ) {
+        crate::serial_println!(
+            "Shard {}: capability denied (channel {} recv)",
+            receiver,
+            channel_id
+        );
+        return u64::MAX;
+    }
+
     if channel_id as usize >= channel::MAX_CHANNELS {
         return u64::MAX;
     }
@@ -256,8 +301,6 @@ fn handle_channel_recv(channel_id: u64, buf_ptr: u64, max_len: u64) -> u64 {
     if !validate_user_write_buf(buf_ptr, max_len) {
         return u64::MAX;
     }
-
-    let receiver = shard::current_shard();
     channel::recv(
         channel_id as usize,
         receiver,
