@@ -11,6 +11,7 @@ mod ext2;
 mod frame;
 mod fs;
 mod gdt;
+mod gpu;
 mod highhalf;
 mod idt;
 mod iommu;
@@ -288,7 +289,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v1.1.0 booting...");
+    serial_println!("coconutOS supervisor v1.2.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -340,6 +341,9 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
 
     // Set up IOMMU if DMAR table present (requires acpi + vmm::map_mmio)
     iommu::init();
+
+    // Initialize GPU subsystem — creates HAL shard if display device found
+    gpu::init();
 
     // Initialize filesystem
     fs::init();

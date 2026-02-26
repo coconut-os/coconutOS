@@ -37,20 +37,33 @@ unsafe fn inl(port: u16) -> u32 {
 // Config space access
 // ---------------------------------------------------------------------------
 
-/// Read a 32-bit value from PCI config space.
-/// Offset must be 4-byte aligned.
-pub fn config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    let addr: u32 = 0x8000_0000
+/// Build a PCI Configuration Address register value.
+fn config_addr(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    0x8000_0000
         | ((bus as u32) << 16)
         | ((device as u32) << 11)
         | ((function as u32) << 8)
-        | ((offset as u32) & 0xFC);
+        | ((offset as u32) & 0xFC)
+}
 
+/// Read a 32-bit value from PCI config space.
+/// Offset must be 4-byte aligned.
+pub fn config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     // Sound: I/O port access is always valid on x86; CONFIG_ADDRESS/DATA are
     // the standard PCI configuration mechanism.
     unsafe {
-        outl(CONFIG_ADDRESS, addr);
+        outl(CONFIG_ADDRESS, config_addr(bus, device, function, offset));
         inl(CONFIG_DATA)
+    }
+}
+
+/// Write a 32-bit value to PCI config space.
+/// Offset must be 4-byte aligned.
+pub fn config_write32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    // Sound: same as config_read32 — standard PCI config mechanism.
+    unsafe {
+        outl(CONFIG_ADDRESS, config_addr(bus, device, function, offset));
+        outl(CONFIG_DATA, value);
     }
 }
 
@@ -185,4 +198,113 @@ fn class_name(class: u8, subclass: u8) -> &'static str {
 /// Number of discovered GPUs (class 0x03).
 pub fn gpu_count() -> usize {
     unsafe { *(&raw const GPU_COUNT) }
+}
+
+// ---------------------------------------------------------------------------
+// BAR decoding
+// ---------------------------------------------------------------------------
+
+/// Decoded PCI Base Address Register information.
+#[derive(Clone, Copy)]
+pub struct BarInfo {
+    pub phys_base: u64,
+    pub size: u64,
+    pub is_memory: bool,
+    pub is_64bit: bool,
+    pub prefetchable: bool,
+}
+
+impl BarInfo {
+    const fn empty() -> Self {
+        Self { phys_base: 0, size: 0, is_memory: false, is_64bit: false, prefetchable: false }
+    }
+}
+
+/// Probe BAR sizes for a PCI device using the standard write-all-ones technique.
+///
+/// Temporarily disables memory/IO decode (command register bits 0-1) to prevent
+/// side effects while probing, then restores the original command register.
+pub fn probe_bars(dev: &PciDevice) -> [BarInfo; 6] {
+    let mut bars = [BarInfo::empty(); 6];
+
+    // Save command register and disable memory/IO decode during probing
+    let cmd = config_read32(dev.bus, dev.device, dev.function, 0x04);
+    config_write32(dev.bus, dev.device, dev.function, 0x04, cmd & !0x03);
+
+    let mut i = 0usize;
+    while i < 6 {
+        let offset = 0x10 + (i as u8) * 4;
+        let original = config_read32(dev.bus, dev.device, dev.function, offset);
+
+        // Write all-ones, read back to get writable mask
+        config_write32(dev.bus, dev.device, dev.function, offset, 0xFFFF_FFFF);
+        let mask = config_read32(dev.bus, dev.device, dev.function, offset);
+        config_write32(dev.bus, dev.device, dev.function, offset, original);
+
+        if mask == 0 || mask == 0xFFFF_FFFF {
+            i += 1;
+            continue;
+        }
+
+        // Bit 0: 0 = memory BAR, 1 = I/O BAR
+        if original & 1 != 0 {
+            i += 1;
+            continue; // skip I/O BARs
+        }
+
+        let prefetchable = original & 0x08 != 0;
+        let bar_type = (original >> 1) & 0x3;
+        let is_64bit = bar_type == 2;
+
+        if is_64bit && i < 5 {
+            // 64-bit BAR: probe high 32 bits too
+            let high_offset = 0x10 + ((i + 1) as u8) * 4;
+            let high_original = config_read32(dev.bus, dev.device, dev.function, high_offset);
+
+            config_write32(dev.bus, dev.device, dev.function, high_offset, 0xFFFF_FFFF);
+            let high_mask = config_read32(dev.bus, dev.device, dev.function, high_offset);
+            config_write32(dev.bus, dev.device, dev.function, high_offset, high_original);
+
+            let full_mask = ((high_mask as u64) << 32) | ((mask & 0xFFFF_FFF0) as u64);
+            if full_mask == 0 {
+                i += 2;
+                continue;
+            }
+            let size = (!full_mask).wrapping_add(1);
+            let base = ((high_original as u64) << 32) | ((original & 0xFFFF_FFF0) as u64);
+
+            bars[i] = BarInfo { phys_base: base, size, is_memory: true, is_64bit: true, prefetchable };
+            i += 2; // skip the high BAR register
+        } else {
+            let mem_mask = mask & 0xFFFF_FFF0;
+            if mem_mask == 0 {
+                i += 1;
+                continue;
+            }
+            let size = ((!mem_mask) as u64).wrapping_add(1);
+            let base = (original & 0xFFFF_FFF0) as u64;
+
+            bars[i] = BarInfo { phys_base: base, size, is_memory: true, is_64bit: false, prefetchable };
+            i += 1;
+        }
+    }
+
+    // Restore command register (re-enables memory/IO decode)
+    config_write32(dev.bus, dev.device, dev.function, 0x04, cmd);
+
+    bars
+}
+
+/// Find the first PCI device with display class (0x03).
+pub fn find_display_device() -> Option<PciDevice> {
+    unsafe {
+        let count = *(&raw const DEVICE_COUNT);
+        let devices = &*(&raw const DEVICES);
+        for i in 0..count {
+            if devices[i].class == CLASS_DISPLAY {
+                return Some(devices[i]);
+            }
+        }
+    }
+    None
 }
