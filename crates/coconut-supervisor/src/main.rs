@@ -9,6 +9,8 @@ mod frame;
 mod gdt;
 mod highhalf;
 mod idt;
+pub mod pic;
+pub mod pit;
 mod pmm;
 pub mod scheduler;
 mod serial;
@@ -280,7 +282,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.3.0 booting...");
+    serial_println!("coconutOS supervisor v0.4.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -316,26 +318,30 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     syscall::init();
     serial_println!("Syscall: configured (LSTAR, STAR, SFMASK)");
 
-    serial_println!();
+    // Initialize PIC (remap IRQs to vectors 32-47)
+    pic::init();
+    serial_println!("PIC: remapped (IRQ 0-15 -> vectors 32-47)");
 
-    // Create two shards: ping and pong
-    let (ping_start, ping_end) = shard::ping_binary();
-    let ping_id = shard::create(ping_start, ping_end, "ping");
-
-    let (pong_start, pong_end) = shard::pong_binary();
-    let pong_id = shard::create(pong_start, pong_end, "pong");
-
-    // Create IPC channel between them
-    channel::init(0, ping_id, pong_id);
-    serial_println!(
-        "Channel 0: created between shard {} and shard {}",
-        ping_id,
-        pong_id
-    );
+    // Initialize PIT (~1ms periodic timer on channel 0)
+    pit::init();
+    serial_println!("PIT: configured (~1ms periodic, channel 0)");
 
     serial_println!();
 
-    // Enter scheduler — runs shards cooperatively until all exit
+    // Create two counter shards for preemptive scheduling demo
+    let (a_start, a_end) = shard::counter_a_binary();
+    shard::create(a_start, a_end, "counter-A", shard::Priority::Normal);
+
+    let (b_start, b_end) = shard::counter_b_binary();
+    shard::create(b_start, b_end, "counter-B", shard::Priority::Normal);
+
+    serial_println!();
+
+    // Unmask PIT timer IRQ and enable interrupts
+    pic::unmask(0);
+    unsafe { asm!("sti", options(nomem, nostack)) };
+
+    // Enter scheduler — preemptive round-robin until all shards exit
     scheduler::run_loop();
 }
 

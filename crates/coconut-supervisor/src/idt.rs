@@ -1,8 +1,8 @@
-//! Interrupt Descriptor Table with basic fault handlers.
+//! Interrupt Descriptor Table with fault handlers and timer ISR.
 //!
 //! Sets up a 256-entry IDT. Specific handlers for divide-by-zero (#0),
-//! double fault (#8), GPF (#13), and page fault (#14). All others use
-//! a default handler that prints the vector number and halts.
+//! double fault (#8), GPF (#13), page fault (#14), and timer (vector 32).
+//! All others use a default handler that prints the vector number and halts.
 
 use core::arch::{asm, naked_asm};
 
@@ -67,9 +67,12 @@ pub fn init() {
         IDT[13] = IdtEntry::new(isr_stub_13 as *const () as usize);
         IDT[14] = IdtEntry::new(isr_stub_14 as *const () as usize);
 
+        // Timer ISR at vector 32 (PIT IRQ 0, remapped by PIC)
+        IDT[32] = IdtEntry::new(isr_timer as *const () as usize);
+
         // Install default handler for all other vectors
         for i in 0..256 {
-            if i != 0 && i != 8 && i != 13 && i != 14 {
+            if i != 0 && i != 8 && i != 13 && i != 14 && i != 32 {
                 IDT[i] = IdtEntry::new(isr_stub_default as *const () as usize);
             }
         }
@@ -183,4 +186,77 @@ extern "C" fn fault_handler_rust(vector: u64, error_code: u64, rip: u64) {
         unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
         crate::serial_println!("  CR2:        {:#x}", cr2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Timer ISR (vector 32) — PIT IRQ 0, preemptive scheduling
+// ---------------------------------------------------------------------------
+
+/// Timer ISR (vector 32, PIT IRQ 0).
+///
+/// Two paths based on interrupted context:
+/// - Kernel mode (CS RPL=0): increment ticks, EOI, iretq
+/// - User mode (CS RPL=3): save regs, preempt via scheduler, restore, iretq
+///
+/// Interrupt frame on stack at entry (pushed by CPU):
+///   [RSP+0]  = RIP
+///   [RSP+8]  = CS
+///   [RSP+16] = RFLAGS
+///   [RSP+24] = RSP
+///   [RSP+32] = SS
+#[unsafe(naked)]
+unsafe extern "C" fn isr_timer() {
+    naked_asm!(
+        // Check CS RPL bits in the interrupt frame
+        "test qword ptr [rsp + 8], 3",
+        "jnz 2f",
+
+        // --- Kernel-mode path: increment ticks, EOI, return ---
+        "push rax",
+        "mov rax, offset {ticks}",
+        "inc qword ptr [rax]",
+        "mov al, 0x20",
+        "out 0x20, al",
+        "pop rax",
+        "iretq",
+
+        // --- User-mode path: preempt the running shard ---
+        "2:",
+        // Save all caller-saved registers (Rust ABI will clobber these)
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+
+        // Call scheduler::timer_preempt()
+        // This increments ticks, sends EOI, sets shard Ready, context-switches.
+        // When the shard is resumed later, execution returns here.
+        "call {timer_preempt}",
+
+        // Shard resumed — restore caller-saved registers
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+
+        // Restore user data segments (iretq only restores CS and SS, not DS/ES)
+        "mov eax, 0x1B",    // USER_DS = 0x18 | 3
+        "mov ds, ax",
+        "mov es, ax",
+        "pop rax",           // restore original rax
+
+        "iretq",
+
+        ticks = sym crate::pit::TICKS,
+        timer_preempt = sym crate::scheduler::timer_preempt,
+    );
 }

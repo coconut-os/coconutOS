@@ -32,8 +32,19 @@ pub enum ShardState {
     Destroyed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    Critical = 0,
+    High = 1,
+    Normal = 2,
+    Low = 3,
+}
+
+pub const PRIORITY_LEVELS: usize = 4;
+
 pub struct ShardDescriptor {
     pub state: ShardState,
+    pub priority: Priority,
     pub pml4_phys: u64,
     pub allocated_frames: [u64; MAX_SHARD_FRAMES],
     pub frame_count: usize,
@@ -51,6 +62,7 @@ pub struct ShardDescriptor {
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
     ShardDescriptor {
         state: ShardState::Free,
+        priority: Priority::Normal,
         pml4_phys: 0,
         allocated_frames: [0; MAX_SHARD_FRAMES],
         frame_count: 0,
@@ -66,136 +78,105 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
 pub static mut CURRENT_SHARD: usize = usize::MAX;
 
 // ---------------------------------------------------------------------------
-// Embedded shard binaries
+// Embedded shard binaries — counter shards for preemptive scheduling demo
 // ---------------------------------------------------------------------------
 
-// Ping shard: sends "PING" on channel 0, recvs response, prints result, exits
+// Counter A: busy-loop + print "Shard A: tick\n" × 5, then exit
 core::arch::global_asm!(
     ".section .rodata",
     ".balign 16",
-    ".global _ping_shard_start",
-    ".global _ping_shard_end",
-    "_ping_shard_start:",
+    ".global _counter_a_start",
+    ".global _counter_a_end",
+    "_counter_a_start:",
 
-    // --- Send "PING" via SYS_CHANNEL_SEND(channel=0, buf, len=4) ---
-    "lea rdi, [rip + 3f]",       // skip past code to "PING" string (will be rip-relative)
-    // Actually, we need the string at a known offset. Let's put the string at the end
-    // and reference it. But we need to be careful about position.
-    // Let's use the stack to build strings instead for the message to send.
+    // r12 = tick counter (callee-saved, survives syscall + preemption)
+    "mov r12, 5",
 
-    // Put "PING" on the stack
-    "sub rsp, 16",               // make room
-    "mov dword ptr [rsp], 0x474E4950",  // "PING" in little-endian
-    "mov rdi, 0",                // channel_id = 0
-    "mov rsi, rsp",              // buf = stack pointer
-    "mov rdx, 4",                // len = 4
-    "mov rax, 21",               // SYS_CHANNEL_SEND
-    "syscall",
+    // --- Tick loop ---
+    "1:",
+    // Busy loop: burn CPU so the 1ms timer can preempt us
+    "mov rcx, 0x500000",
+    "2:",
+    "dec rcx",
+    "jnz 2b",
 
-    // --- Print "Ping: sending PING\n" via SYS_SERIAL_WRITE ---
-    "lea rdi, [rip + 3f]",       // buf = msg_ping_send
-    "mov rsi, 19",               // len
+    // Print "Shard A: tick\n" via SYS_SERIAL_WRITE(buf, len)
+    "lea rdi, [rip + 3f]",
+    "mov rsi, 14",
     "mov rax, 1",                // SYS_SERIAL_WRITE
     "syscall",
 
-    // --- Recv response via SYS_CHANNEL_RECV(channel=0, buf, max_len=16) ---
-    "mov rdi, 0",                // channel_id = 0
-    "lea rsi, [rsp]",            // buf = stack buffer
-    "mov rdx, 16",               // max_len (fits in stack allocation)
-    "mov rax, 22",               // SYS_CHANNEL_RECV
-    "syscall",
-    // rax = bytes received
-
-    // --- Print "Ping: received PONG\n" via SYS_SERIAL_WRITE ---
-    "lea rdi, [rip + 4f]",       // buf = msg_ping_recv
-    "mov rsi, 20",               // len
-    "mov rax, 1",                // SYS_SERIAL_WRITE
-    "syscall",
+    "dec r12",
+    "jnz 1b",
 
     // --- SYS_EXIT(0) ---
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
-    "2: hlt",
-    "jmp 2b",
+    "4: hlt",
+    "jmp 4b",
 
-    // String data
-    "3: .ascii \"Ping: sending PING\\n\"",
-    "4: .ascii \"Ping: received PONG\\n\"",
+    // String data (within code page, readable by SYS_SERIAL_WRITE)
+    "3: .ascii \"Shard A: tick\\n\"",
 
-    "_ping_shard_end:",
+    "_counter_a_end:",
 );
 
-// Pong shard: recvs on channel 0, prints message, sends "PONG", exits
+// Counter B: busy-loop + print "Shard B: tick\n" × 5, then exit
 core::arch::global_asm!(
     ".section .rodata",
     ".balign 16",
-    ".global _pong_shard_start",
-    ".global _pong_shard_end",
-    "_pong_shard_start:",
+    ".global _counter_b_start",
+    ".global _counter_b_end",
+    "_counter_b_start:",
 
-    // --- Recv on channel 0 via SYS_CHANNEL_RECV ---
-    "sub rsp, 16",               // make room on stack for recv buffer
-    "mov rdi, 0",                // channel_id = 0
-    "lea rsi, [rsp]",            // buf = stack
-    "mov rdx, 16",               // max_len (fits in stack allocation)
-    "mov rax, 22",               // SYS_CHANNEL_RECV
-    "syscall",
+    "mov r12, 5",
 
-    // --- Print "Pong: received PING\n" ---
+    "1:",
+    "mov rcx, 0x500000",
+    "2:",
+    "dec rcx",
+    "jnz 2b",
+
     "lea rdi, [rip + 3f]",
-    "mov rsi, 20",
-    "mov rax, 1",                // SYS_SERIAL_WRITE
+    "mov rsi, 14",
+    "mov rax, 1",
     "syscall",
 
-    // --- Send "PONG" via SYS_CHANNEL_SEND ---
-    "mov dword ptr [rsp], 0x474E4F50",  // "PONG" in little-endian
-    "mov rdi, 0",                // channel_id = 0
-    "mov rsi, rsp",              // buf = stack
-    "mov rdx, 4",                // len = 4
-    "mov rax, 21",               // SYS_CHANNEL_SEND
-    "syscall",
+    "dec r12",
+    "jnz 1b",
 
-    // --- Print "Pong: sending PONG\n" ---
-    "lea rdi, [rip + 4f]",
-    "mov rsi, 19",
-    "mov rax, 1",                // SYS_SERIAL_WRITE
-    "syscall",
-
-    // --- SYS_EXIT(0) ---
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
-    "2: hlt",
-    "jmp 2b",
+    "4: hlt",
+    "jmp 4b",
 
-    // String data
-    "3: .ascii \"Pong: received PING\\n\"",
-    "4: .ascii \"Pong: sending PONG\\n\"",
+    "3: .ascii \"Shard B: tick\\n\"",
 
-    "_pong_shard_end:",
+    "_counter_b_end:",
 );
 
 extern "C" {
-    static _ping_shard_start: u8;
-    static _ping_shard_end: u8;
-    static _pong_shard_start: u8;
-    static _pong_shard_end: u8;
+    static _counter_a_start: u8;
+    static _counter_a_end: u8;
+    static _counter_b_start: u8;
+    static _counter_b_end: u8;
 }
 
-/// Get the ping shard binary (start, end) pointers.
-pub fn ping_binary() -> (*const u8, *const u8) {
+/// Get the counter-A shard binary (start, end) pointers.
+pub fn counter_a_binary() -> (*const u8, *const u8) {
     (
-        (&raw const _ping_shard_start) as *const u8,
-        (&raw const _ping_shard_end) as *const u8,
+        (&raw const _counter_a_start) as *const u8,
+        (&raw const _counter_a_end) as *const u8,
     )
 }
 
-/// Get the pong shard binary (start, end) pointers.
-pub fn pong_binary() -> (*const u8, *const u8) {
+/// Get the counter-B shard binary (start, end) pointers.
+pub fn counter_b_binary() -> (*const u8, *const u8) {
     (
-        (&raw const _pong_shard_start) as *const u8,
-        (&raw const _pong_shard_end) as *const u8,
+        (&raw const _counter_b_start) as *const u8,
+        (&raw const _counter_b_end) as *const u8,
     )
 }
 
@@ -204,9 +185,14 @@ pub fn current_shard() -> usize {
     unsafe { *(&raw const CURRENT_SHARD) }
 }
 
-/// Create a new shard with the given binary.
+/// Create a new shard with the given binary and priority.
 /// Returns the shard ID (index).
-pub fn create(binary_start: *const u8, binary_end: *const u8, name: &str) -> usize {
+pub fn create(
+    binary_start: *const u8,
+    binary_end: *const u8,
+    name: &str,
+    priority: Priority,
+) -> usize {
     // Find a free slot
     let id = unsafe {
         let shards = &*(&raw const SHARDS);
@@ -279,6 +265,7 @@ pub fn create(binary_start: *const u8, binary_end: *const u8, name: &str) -> usi
     crate::scheduler::setup_initial_kernel_stack(id);
 
     shard.state = ShardState::Ready;
+    shard.priority = priority;
     shard.blocked_on_channel = usize::MAX;
 
     crate::serial_println!(

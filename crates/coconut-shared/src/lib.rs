@@ -12,6 +12,8 @@ pub const SYS_SERIAL_WRITE: u64 = 1;
 pub const SYS_CHANNEL_SEND: u64 = 21;
 /// Receive on a channel. arg0 = channel_id, arg1 = buf pointer, arg2 = max length.
 pub const SYS_CHANNEL_RECV: u64 = 22;
+/// Yield the current time slice voluntarily.
+pub const SYS_YIELD: u64 = 62;
 
 /// Boot handoff structure passed from bootloader to supervisor.
 ///

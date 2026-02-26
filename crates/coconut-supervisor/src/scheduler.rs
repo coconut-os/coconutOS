@@ -1,19 +1,25 @@
-//! Cooperative scheduler: context switching between shards.
+//! Preemptive round-robin scheduler with priority levels.
 //!
 //! Each shard has its own kernel stack. `context_switch` saves/restores
-//! callee-saved registers and swaps RSP. `run_loop` picks the next Ready
-//! shard and switches to it; shards yield back via `schedule_yield`.
+//! callee-saved registers and swaps RSP. The PIT timer ISR calls
+//! `timer_preempt` to yield the current shard; `run_loop` picks the
+//! next Ready shard using priority-based round-robin.
 
 use core::arch::naked_asm;
 
 use crate::gdt;
-use crate::shard::{self, ShardState, CURRENT_SHARD, MAX_SHARDS, SHARDS};
+use crate::pic;
+use crate::pit;
+use crate::shard::{self, Priority, ShardState, CURRENT_SHARD, MAX_SHARDS, SHARDS};
 use crate::syscall;
 use crate::tss;
 use crate::vmm;
 
 /// Saved RSP for the supervisor context (run_loop runs on __stack_top).
 static mut SUPERVISOR_RSP: u64 = 0;
+
+/// Last scheduled shard ID for round-robin fairness within priority levels.
+static mut LAST_SCHEDULED: usize = 0;
 
 /// Low-level context switch: save callee-saved regs + RSP, load new RSP + regs.
 ///
@@ -107,7 +113,7 @@ extern "C" fn shard_first_entry() -> ! {
 }
 
 /// Yield from the current shard back to the supervisor run_loop.
-/// Called when a shard blocks on a channel recv.
+/// Called when a shard blocks on a channel recv or is preempted by the timer.
 pub fn schedule_yield() {
     let id = unsafe { *(&raw const CURRENT_SHARD) };
     unsafe {
@@ -130,12 +136,65 @@ pub fn schedule_yield_exit() -> ! {
     unreachable!("exited shard resumed");
 }
 
-/// Find the next Ready shard (linear scan, lowest ID first).
+/// Called from the timer ISR (user-mode path) to preempt the current shard.
+///
+/// Increments tick counter, sends EOI (must be before context_switch so the
+/// PIC can deliver the next timer interrupt to the new shard), sets the
+/// current shard from Running to Ready, then yields to the supervisor.
+///
+/// When the shard is resumed later, this function returns back to the ISR
+/// stub, which restores caller-saved regs and iretq's back to user mode.
+pub extern "C" fn timer_preempt() {
+    pit::increment_ticks();
+    pic::send_eoi(0);
+
+    let id = unsafe { *(&raw const CURRENT_SHARD) };
+    if id < MAX_SHARDS {
+        let shard = unsafe { &mut (*(&raw mut SHARDS))[id] };
+        if shard.state == ShardState::Running {
+            shard.state = ShardState::Ready;
+        }
+    }
+
+    schedule_yield();
+    // Returns here when shard is resumed — back to ISR stub
+}
+
+/// Handle SYS_YIELD: voluntarily yield the current time slice.
+pub fn handle_sys_yield() {
+    let id = unsafe { *(&raw const CURRENT_SHARD) };
+    if id < MAX_SHARDS {
+        let shard = unsafe { &mut (*(&raw mut SHARDS))[id] };
+        if shard.state == ShardState::Running {
+            shard.state = ShardState::Ready;
+        }
+    }
+    schedule_yield();
+}
+
+/// Priority-based round-robin: scan priority levels high→low,
+/// within each level start from (LAST_SCHEDULED+1) % MAX_SHARDS.
 fn pick_next_ready() -> Option<usize> {
     let shards = unsafe { &*(&raw const SHARDS) };
-    for i in 0..MAX_SHARDS {
-        if shards[i].state == ShardState::Ready {
-            return Some(i);
+    let last = unsafe { *(&raw const LAST_SCHEDULED) };
+
+    // Priority levels from highest (Critical=0) to lowest (Low=3)
+    let priorities = [
+        Priority::Critical,
+        Priority::High,
+        Priority::Normal,
+        Priority::Low,
+    ];
+
+    for &prio in &priorities {
+        for offset in 1..=MAX_SHARDS {
+            let i = (last + offset) % MAX_SHARDS;
+            if shards[i].state == ShardState::Ready && shards[i].priority == prio {
+                unsafe {
+                    *(&raw mut LAST_SCHEDULED) = i;
+                }
+                return Some(i);
+            }
         }
     }
     None
@@ -218,7 +277,7 @@ pub fn run_loop() -> ! {
     }
 
     crate::serial_println!();
-    crate::serial_println!("coconutOS supervisor v0.3.0: all shards completed.");
+    crate::serial_println!("coconutOS supervisor v0.4.0: all shards completed.");
     crate::serial_println!("Halting.");
 
     crate::halt();
