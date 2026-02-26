@@ -1,0 +1,39 @@
+[tasks.build]
+description = "Build supervisor"
+run = "cargo build -p coconut-supervisor --target x86_64-unknown-none --release"
+
+[tasks.build-boot]
+description = "Build bootloader"
+run = "cargo build -p coconut-boot --target x86_64-unknown-uefi --release"
+
+[tasks.build-all]
+description = "Build everything"
+run = "mise run build && mise run build-boot"
+
+[tasks.run]
+description = "Build + boot QEMU"
+run = "./scripts/qemu-run.sh"
+
+[tasks.check]
+description = "Type-check without linking"
+run = """
+cargo check -p coconut-supervisor --target x86_64-unknown-none
+cargo check -p coconut-boot --target x86_64-unknown-uefi
+cargo check -p coconut-shared
+"""
+
+[tasks.fmt]
+description = "Format code"
+run = "cargo fmt"
+
+[tasks.fmt-check]
+description = "CI format check"
+run = "cargo fmt --check"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "cargo clean"
+
+[tasks.objdump]
+description = "Disassemble supervisor binary"
+run = "rust-objdump -d --no-show-raw-insn target/x86_64-unknown-none/release/coconut-supervisor | less"

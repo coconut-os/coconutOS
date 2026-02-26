@@ -1,3 +1,20 @@
+# Build
 /target
 *.img
 *.fd
+
+# Rust
+**/*.rs.bk
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# mise
+.mise.local.toml
