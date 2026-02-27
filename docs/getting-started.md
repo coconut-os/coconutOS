@@ -67,7 +67,7 @@ This single script builds all Rust crates and C shards, then launches QEMU.
 On a successful boot you should see output like:
 
 ```
-coconutOS supervisor v3.3.0 booting...
+coconutOS supervisor v0.3.3 booting...
 Higher-half: page tables built, CR3 switched
 GDT: loaded (7 entries, TSS active)
 IDT: loaded (256 entries, higher-half)
@@ -91,7 +91,7 @@ llama-inference: token 1 -> 't'
 ...
 llama-inference: inference complete (16 tokens)
 
-coconutOS supervisor v3.3.0: all shards completed.
+coconutOS supervisor v0.3.3: all shards completed.
 Halting.
 ```
 

@@ -64,7 +64,7 @@ On first build, `rustup` installs the nightly toolchain and components from `rus
 ### Expected Output
 
 ```
-coconutOS supervisor v3.3.0 booting...
+coconutOS supervisor v0.3.3 booting...
 Higher-half: page tables built, CR3 switched
 ...
 CR4: OSFXSR + TSD set
@@ -84,7 +84,7 @@ llama-inference: token 1 -> 't'
 ...
 llama-inference: inference complete (16 tokens)
 
-coconutOS supervisor v3.3.0: all shards completed.
+coconutOS supervisor v0.3.3: all shards completed.
 Halting.
 ```
 
