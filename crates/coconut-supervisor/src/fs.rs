@@ -42,36 +42,15 @@ pub fn init() {
     );
 }
 
-/// Validate that a user buffer [ptr, ptr+len) is readable (code or stack page).
+/// Validate that a user buffer [ptr, ptr+len) is readable.
+/// Delegates to syscall module's validation which handles code, data, and stack regions.
 fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
-    if len == 0 || len > 4096 {
-        return false;
-    }
-    let end = ptr.wrapping_add(len);
-    if end < ptr {
-        return false;
-    }
-    // Code region
-    if ptr >= 0x1000 && end <= 0x2000 {
-        return true;
-    }
-    // Stack region
-    if ptr >= 0x7FF000 && end <= 0x800000 {
-        return true;
-    }
-    false
+    crate::syscall::validate_read(ptr, len)
 }
 
-/// Validate that a user buffer for writing lies in the stack region.
+/// Validate that a user buffer for writing lies in a writable region.
 fn validate_user_write_buf(ptr: u64, len: u64) -> bool {
-    if len == 0 || len > 4096 {
-        return false;
-    }
-    let end = ptr.wrapping_add(len);
-    if end < ptr {
-        return false;
-    }
-    ptr >= 0x7FF000 && end <= 0x800000
+    crate::syscall::validate_write(ptr, len)
 }
 
 /// SYS_FS_OPEN: open a file by path. Returns fd or u64::MAX on error.

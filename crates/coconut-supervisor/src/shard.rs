@@ -9,7 +9,8 @@ use crate::highhalf;
 use crate::vmm::{self, PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
 
 /// Maximum number of frames a single shard can allocate.
-const MAX_SHARD_FRAMES: usize = 32;
+/// 256 frames = 1 MiB — sufficient for inference shards with model + activations.
+const MAX_SHARD_FRAMES: usize = 256;
 
 /// Virtual address where the shard code is mapped.
 pub const SHARD_CODE_VADDR: u64 = 0x1000;
@@ -20,7 +21,7 @@ pub const SHARD_STACK_VADDR: u64 = 0x7FF000; // one 4K page, stack top = 0x80000
 /// Initial stack pointer for the shard (top of stack page).
 pub const SHARD_INITIAL_RSP: u64 = 0x800000;
 
-pub const MAX_SHARDS: usize = 4;
+pub const MAX_SHARDS: usize = 8;
 pub const MAX_CAPS_PER_SHARD: usize = 16;
 
 #[derive(Clone, Copy)]
@@ -76,6 +77,10 @@ pub struct ShardDescriptor {
     pub vram_unveil_size: u64,
     /// Virtual address past the last code page (default: 0x2000 for single-page).
     pub code_end_vaddr: u64,
+    /// Start of mmap'd data region (0 = no data region).
+    pub data_start: u64,
+    /// End of mmap'd data region (exclusive).
+    pub data_end: u64,
 }
 
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
@@ -100,6 +105,8 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
         vram_unveil_offset: 0,
         vram_unveil_size: 0,
         code_end_vaddr: SHARD_CODE_VADDR + 0x1000,
+        data_start: 0,
+        data_end: 0,
     }
 }; MAX_SHARDS];
 
@@ -298,6 +305,90 @@ pub fn handle_sys_exit(exit_code: u64) {
     // schedule_yield will context_switch back to the supervisor run_loop.
     // Since CURRENT_SHARD is usize::MAX, we use the exit path.
     crate::scheduler::schedule_yield_exit();
+}
+
+/// Handle SYS_MMAP: allocate data pages in the shard's address space.
+///
+/// Maps `num_pages` frames at [va_start, va_start + num_pages * 4096) with
+/// USER | WRITABLE | NX. Valid range: [code_end_vaddr, 0x7FF000).
+/// Returns 0 on success, u64::MAX on error.
+pub fn handle_sys_mmap(va_start: u64, num_pages: u64) -> u64 {
+    let id = current_shard();
+    let shard = unsafe { &mut (*(&raw mut SHARDS))[id] };
+
+    // Alignment check
+    if va_start & 0xFFF != 0 {
+        crate::serial_println!("Shard {}: mmap: va_start {:#x} not page-aligned", id, va_start);
+        return u64::MAX;
+    }
+
+    if num_pages == 0 || num_pages > 256 {
+        return u64::MAX;
+    }
+
+    let size = num_pages * 4096;
+    let va_end = va_start.checked_add(size).unwrap_or(u64::MAX);
+
+    // Must be between code end and stack
+    if va_start < shard.code_end_vaddr || va_end > SHARD_STACK_VADDR {
+        crate::serial_println!("Shard {}: mmap: range {:#x}-{:#x} out of bounds", id, va_start, va_end);
+        return u64::MAX;
+    }
+
+    // Check overlap with existing data region
+    if shard.data_start != 0 {
+        if va_start < shard.data_end && va_end > shard.data_start {
+            crate::serial_println!("Shard {}: mmap: overlaps existing data region", id);
+            return u64::MAX;
+        }
+    }
+
+    // Check frame budget
+    if shard.frame_count + num_pages as usize > MAX_SHARD_FRAMES {
+        crate::serial_println!("Shard {}: mmap: would exceed frame budget", id);
+        return u64::MAX;
+    }
+
+    // Allocate and map each page
+    for i in 0..num_pages {
+        let phys = match frame::alloc_frame_zeroed() {
+            Some(p) => p,
+            None => {
+                crate::serial_println!("Shard {}: mmap: OOM at page {}", id, i);
+                return u64::MAX;
+            }
+        };
+        shard.allocated_frames[shard.frame_count] = phys;
+        shard.frame_count += 1;
+
+        vmm::map_4k(
+            shard.pml4_phys,
+            va_start + i * 4096,
+            phys,
+            PTE_USER | PTE_WRITABLE | PTE_NO_EXECUTE,
+        );
+    }
+
+    // Extend or set data region tracking
+    if shard.data_start == 0 {
+        shard.data_start = va_start;
+        shard.data_end = va_end;
+    } else {
+        // Extend region to cover the new mapping
+        if va_start < shard.data_start {
+            shard.data_start = va_start;
+        }
+        if va_end > shard.data_end {
+            shard.data_end = va_end;
+        }
+    }
+
+    crate::serial_println!(
+        "Shard {}: mmap {:#x}-{:#x} ({} pages)",
+        id, va_start, va_end, num_pages
+    );
+
+    0
 }
 
 /// Destroy a shard: zero all memory, free frames, tear down page tables.

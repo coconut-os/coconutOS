@@ -1,7 +1,7 @@
 //! Read-only ext2 filesystem parser operating on a static byte slice.
 //!
-//! Supports rev 0 ext2 with 1024-byte blocks and direct block pointers only
-//! (files up to 12 KiB). Used for reading the embedded ramdisk image.
+//! Supports rev 0 ext2 with 1024-byte blocks, direct block pointers (0-11)
+//! and a single indirect block (12), supporting files up to 268 KiB.
 
 const EXT2_MAGIC: u16 = 0xEF53;
 const ROOT_INODE: u32 = 2;
@@ -26,10 +26,11 @@ static mut FS: Ext2Fs = Ext2Fs {
 };
 
 /// Parsed inode data.
+/// blocks[0..12] = direct, blocks[12] = single indirect, blocks[13..15] unused.
 pub struct Inode {
     pub mode: u16,
     pub size: u32,
-    pub blocks: [u32; 12],
+    pub blocks: [u32; 15],
 }
 
 fn read_u16_le(data: &[u8], offset: usize) -> u16 {
@@ -104,8 +105,8 @@ pub fn read_inode(ino: u32) -> Option<Inode> {
     let mode = read_u16_le(data, offset);
     let size = read_u32_le(data, offset + 4);
 
-    let mut blocks = [0u32; 12];
-    for i in 0..12 {
+    let mut blocks = [0u32; 15];
+    for i in 0..15 {
         blocks[i] = read_u32_le(data, offset + 40 + i * 4);
     }
 
@@ -183,13 +184,28 @@ pub fn read_data(inode: &Inode, offset: u32, buf: &mut [u8]) -> usize {
     let mut bytes_read = 0;
     let mut file_offset = offset as usize;
 
+    // Indirect block pointers: 1024-byte block / 4 bytes per pointer = 256 entries
+    let ptrs_per_block = block_size / 4;
+
     while bytes_read < to_read {
         let block_index = file_offset / block_size;
-        if block_index >= 12 {
-            break; // Only direct blocks
-        }
 
-        let block_nr = inode.blocks[block_index];
+        let block_nr = if block_index < 12 {
+            // Direct blocks
+            inode.blocks[block_index]
+        } else if block_index < 12 + ptrs_per_block {
+            // Single indirect: inode.blocks[12] points to a block of u32 pointers
+            let indirect_block = inode.blocks[12];
+            if indirect_block == 0 {
+                break;
+            }
+            let ptr_offset = indirect_block as usize * block_size
+                + (block_index - 12) * 4;
+            read_u32_le(data, ptr_offset)
+        } else {
+            break; // Double/triple indirect not supported
+        };
+
         if block_nr == 0 {
             break;
         }

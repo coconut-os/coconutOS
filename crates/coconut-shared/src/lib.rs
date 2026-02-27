@@ -28,6 +28,8 @@ pub const SYS_GPU_DMA: u64 = 40;
 pub const SYS_GPU_PLEDGE: u64 = 41;
 /// Lock VRAM range for DMA (one-shot). a0=offset, a1=size.
 pub const SYS_GPU_UNVEIL: u64 = 42;
+/// Map data pages into shard address space. a0=va_start (page-aligned), a1=num_pages.
+pub const SYS_MMAP: u64 = 43;
 
 /// Yield the current time slice voluntarily.
 pub const SYS_YIELD: u64 = 62;

@@ -81,6 +81,28 @@ clang -target x86_64-unknown-none-elf -c "$HELLO_C_DIR/start.S" \
 
 export COCONUT_SHARD_HELLO_C_BIN="$TARGET_DIR/shard-hello-c.bin"
 
+echo "==> Building llama-inference shard..."
+LLAMA_DIR="$ROOT_DIR/shards/llama-inference"
+LLAMA_OBJ_DIR="$TARGET_DIR/llama-inference"
+mkdir -p "$LLAMA_OBJ_DIR"
+
+# SSE enabled (no -mno-sse flags) — inference shard needs float math
+clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
+    -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic \
+    -O2 -c "$LLAMA_DIR/main.c" -o "$LLAMA_OBJ_DIR/main.o"
+
+clang -target x86_64-unknown-none-elf -c "$LLAMA_DIR/start.S" \
+    -o "$LLAMA_OBJ_DIR/start.o"
+
+"$RUST_LLD" -flavor gnu -T "$ROOT_DIR/targets/shard.ld" --gc-sections \
+    "$LLAMA_OBJ_DIR/start.o" "$LLAMA_OBJ_DIR/main.o" \
+    -o "$LLAMA_OBJ_DIR/llama-inference.elf"
+
+"$LLVM_OBJCOPY" -O binary "$LLAMA_OBJ_DIR/llama-inference.elf" \
+    "$TARGET_DIR/shard-llama-inference.bin"
+
+export COCONUT_SHARD_LLAMA_BIN="$TARGET_DIR/shard-llama-inference.bin"
+
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \
     --manifest-path "$ROOT_DIR/Cargo.toml"

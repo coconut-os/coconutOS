@@ -43,6 +43,7 @@ typedef unsigned long      size_t;
 #define SYS_GPU_DMA      40
 #define SYS_GPU_PLEDGE   41
 #define SYS_GPU_UNVEIL   42
+#define SYS_MMAP         43
 #define SYS_YIELD        62
 
 /* Pledge bits */
@@ -209,6 +210,11 @@ static inline uint64_t coconut_fs_stat(uint64_t fd)
 static inline uint64_t coconut_fs_close(uint64_t fd)
 {
     return coconut_syscall1(SYS_FS_CLOSE, fd);
+}
+
+static inline uint64_t coconut_mmap(uint64_t va_start, uint64_t num_pages)
+{
+    return coconut_syscall2(SYS_MMAP, va_start, num_pages);
 }
 
 /* -----------------------------------------------------------------------

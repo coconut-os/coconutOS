@@ -264,12 +264,22 @@ unsafe extern "C" fn isr_timer() {
         "push r10",
         "push r11",
 
+        // Save FPU/SSE state — the shard uses float math (SSE2) and
+        // clear_sensitive_cpu_state() zeros XMM on context switch.
+        // FXSAVE area is 512 bytes, must be 16-byte aligned.
+        "sub rsp, 512",
+        "fxsave [rsp]",
+
         // Call scheduler::timer_preempt()
         // This increments ticks, sends EOI, sets shard Ready, context-switches.
         // When the shard is resumed later, execution returns here.
         "call {timer_preempt}",
 
-        // Shard resumed — restore caller-saved registers
+        // Shard resumed — restore FPU/SSE state (same shard, no cross-shard leak)
+        "fxrstor [rsp]",
+        "add rsp, 512",
+
+        // Restore caller-saved registers
         "pop r11",
         "pop r10",
         "pop r9",

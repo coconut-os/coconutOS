@@ -177,7 +177,8 @@ fn pledge_allows(nr: u64) -> bool {
         coconut_shared::SYS_EXIT
         | coconut_shared::SYS_YIELD
         | coconut_shared::SYS_GPU_PLEDGE
-        | coconut_shared::SYS_GPU_UNVEIL => return true,
+        | coconut_shared::SYS_GPU_UNVEIL
+        | coconut_shared::SYS_MMAP => return true,
         _ => {}
     }
 
@@ -241,6 +242,7 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         coconut_shared::SYS_FS_READ => fs::handle_fs_read(a0, a1, a2),
         coconut_shared::SYS_FS_STAT => fs::handle_fs_stat(a0),
         coconut_shared::SYS_FS_CLOSE => fs::handle_fs_close(a0),
+        coconut_shared::SYS_MMAP => shard::handle_sys_mmap(a0, a1),
         coconut_shared::SYS_GPU_DMA => gpu::handle_dma(a0, a1, a2),
         coconut_shared::SYS_GPU_PLEDGE => gpu::handle_gpu_pledge(a0),
         coconut_shared::SYS_GPU_UNVEIL => gpu::handle_gpu_unveil(a0, a1),
@@ -256,10 +258,12 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 }
 
 /// Validate that a user buffer [ptr, ptr+len) lies entirely within
-/// allowed user-space regions: code [0x1000, code_end) or stack [0x7FF000, 0x800000).
-///
-/// `code_end` is read from the current shard's descriptor to support multi-page
-/// code (e.g. Rust shard binaries larger than 4 KiB).
+/// allowed user-space regions: code [0x1000, code_end), data [data_start, data_end),
+/// or stack [0x7FF000, 0x800000).
+pub fn validate_read(ptr: u64, len: u64) -> bool {
+    validate_user_read_buf(ptr, len)
+}
+
 fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     if len == 0 || len > 4096 {
         return false;
@@ -268,10 +272,14 @@ fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     if end < ptr {
         return false; // overflow
     }
-    // Code region (variable size)
     let id = shard::current_shard();
-    let code_end = unsafe { (*(&raw const shard::SHARDS))[id].code_end_vaddr };
-    if ptr >= 0x1000 && end <= code_end {
+    let s = unsafe { &(*(&raw const shard::SHARDS))[id] };
+    // Code region (variable size)
+    if ptr >= 0x1000 && end <= s.code_end_vaddr {
+        return true;
+    }
+    // Data region (mmap'd)
+    if s.data_start != 0 && ptr >= s.data_start && end <= s.data_end {
         return true;
     }
     // Stack region
@@ -281,7 +289,12 @@ fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     false
 }
 
-/// Validate that a user buffer for writing lies in the stack region [0x7FF000, 0x800000).
+/// Validate that a user buffer for writing lies in a writable region:
+/// data [data_start, data_end) or stack [0x7FF000, 0x800000).
+pub fn validate_write(ptr: u64, len: u64) -> bool {
+    validate_user_write_buf(ptr, len)
+}
+
 fn validate_user_write_buf(ptr: u64, len: u64) -> bool {
     if len == 0 || len > 4096 {
         return false;
@@ -290,6 +303,13 @@ fn validate_user_write_buf(ptr: u64, len: u64) -> bool {
     if end < ptr {
         return false;
     }
+    let id = shard::current_shard();
+    let s = unsafe { &(*(&raw const shard::SHARDS))[id] };
+    // Data region (mmap'd, writable)
+    if s.data_start != 0 && ptr >= s.data_start && end <= s.data_end {
+        return true;
+    }
+    // Stack region
     ptr >= 0x7FF000 && end <= 0x800000
 }
 

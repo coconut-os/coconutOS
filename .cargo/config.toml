@@ -6,6 +6,7 @@
 rustflags = [
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",
+    "-C", "target-feature=-sse,-sse2",
     "-C", "link-arg=-Tcrates/coconut-supervisor/linker.ld",
     "-C", "link-arg=--gc-sections",
 ]

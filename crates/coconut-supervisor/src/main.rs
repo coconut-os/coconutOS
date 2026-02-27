@@ -289,7 +289,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v2.6.0 booting...");
+    serial_println!("coconutOS supervisor v3.3.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -333,17 +333,18 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     pit::init();
     serial_println!("PIT: configured (~1ms periodic, channel 0)");
 
-    // Prevent user-mode timing attacks — CR4.TSD makes rdtsc/rdtscp ring-0 only
+    // CR4.OSFXSR (bit 9): enable FXSAVE/FXRSTOR for SSE state management
+    // CR4.TSD (bit 2): prevent user-mode timing attacks — rdtsc/rdtscp ring-0 only
     unsafe {
         asm!(
             "mov rax, cr4",
-            "or rax, 4",
+            "or rax, 0x204",
             "mov cr4, rax",
             out("rax") _,
             options(nomem, nostack),
         );
     }
-    serial_println!("Side-channel: CR4.TSD set (rdtsc restricted to ring 0)");
+    serial_println!("CR4: OSFXSR + TSD set");
 
     // Detect CPU-level mitigations (IBPB for branch predictor flushing)
     scheduler::detect_cpu_mitigations();
@@ -375,6 +376,14 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     // Sound: pointer arithmetic stays within the included binary's bounds.
     let end = unsafe { start.add(HELLO_C_BIN.len()) };
     shard::create(start, end, "hello-c", shard::Priority::Normal);
+
+    // Create llama-inference shard (transformer forward pass demo)
+    static LLAMA_BIN: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-inference.bin"));
+    let start = LLAMA_BIN.as_ptr();
+    // Sound: pointer arithmetic stays within the included binary's bounds.
+    let end = unsafe { start.add(LLAMA_BIN.len()) };
+    shard::create(start, end, "llama-inference", shard::Priority::Normal);
 
     serial_println!();
 
