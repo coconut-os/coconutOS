@@ -134,6 +134,12 @@ fn ensure_table(entry: &mut PageTableEntry, parent_flags: u64) -> u64 {
 /// Map a 4 KiB page: virt → phys with the given flags.
 /// Allocates intermediate page tables as needed.
 pub fn map_4k(pml4_phys: u64, virt: u64, phys: u64, flags: u64) {
+    // W^X: no page may be both writable and executable
+    assert!(
+        flags & PTE_WRITABLE == 0 || flags & PTE_NO_EXECUTE != 0,
+        "W^X: page cannot be both writable and executable"
+    );
+
     // Intermediate entries need PRESENT|WRITABLE|USER so they don't
     // restrict the leaf entry's permissions.
     let parent_flags = PTE_PRESENT | PTE_WRITABLE | PTE_USER;

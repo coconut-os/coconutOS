@@ -19,15 +19,15 @@ GPU HAL shard for AMD RDNA3/CDNA3, basic compute dispatch.
 - [x] **1.2** GPU HAL shard: device init, memory alloc, command queue
 - [x] **1.3** Basic compute dispatch (4×4 matrix multiply via command ring)
 - [x] **1.4** GPU memory management with typed allocations
-- [ ] **1.5** VRAM zeroing on free, W^X enforcement
-- [ ] **1.6** Performance baseline: compare GPU compute throughput vs. Linux/ROCm
+- [x] **1.5** VRAM zeroing on free, W^X enforcement
+- [x] **1.6** Performance baseline: compare GPU compute throughput vs. Linux/ROCm
 
 ## Multi-Shard GPU Isolation — Planned
 
 Multiple inference shards with strong isolation on a single GPU.
 
-- [ ] **2.1** GPU partitioning (CU slicing, VRAM carving)
-- [ ] **2.2** Multiple GPU HAL shard instances (one per partition)
+- [x] **2.1** GPU partitioning (CU slicing, VRAM carving)
+- [x] **2.2** Multiple GPU HAL shard instances (one per partition)
 - [ ] **2.3** Inter-shard GPU DMA (pipeline parallelism)
 - [ ] **2.4** `pledge_gpu` / `unveil_vram` enforcement
 - [ ] **2.5** GPU ASLR
