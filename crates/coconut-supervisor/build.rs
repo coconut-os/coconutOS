@@ -169,5 +169,12 @@ fn main() {
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
+    // Copy C shard flat binary into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_HELLO_C_BIN") {
+        let dst = Path::new(&out_dir).join("shard-hello-c.bin");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-hello-c.bin");
+        println!("cargo::rerun-if-changed={}", shard_path);
+    }
+
     println!("cargo::rerun-if-changed=build.rs");
 }

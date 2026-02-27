@@ -27,9 +27,9 @@ if [ -z "$OVMF_CODE" ]; then
 fi
 
 # Check dependencies
-for cmd in qemu-system-x86_64 mformat mcopy; do
+for cmd in qemu-system-x86_64 mformat mcopy clang; do
     if ! command -v "$cmd" &>/dev/null; then
-        echo "ERROR: $cmd not found. Install with: brew install qemu mtools"
+        echo "ERROR: $cmd not found. Install with: brew install qemu mtools llvm"
         exit 1
     fi
 done
@@ -53,6 +53,33 @@ fi
 "$LLVM_OBJCOPY" -O binary "$SHARD_ELF" "$TARGET_DIR/shard-gpu.bin"
 
 export COCONUT_SHARD_GPU_BIN="$TARGET_DIR/shard-gpu.bin"
+
+# Locate rust-lld from the Rust toolchain (same sysroot as llvm-objcopy)
+RUST_LLD="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin/rust-lld"
+if [ ! -f "$RUST_LLD" ]; then
+    RUST_LLD="rust-lld"
+fi
+
+echo "==> Building hello-c shard..."
+HELLO_C_DIR="$ROOT_DIR/shards/hello-c"
+HELLO_C_OBJ_DIR="$TARGET_DIR/hello-c"
+mkdir -p "$HELLO_C_OBJ_DIR"
+
+clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
+    -mno-sse -mno-sse2 -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic \
+    -O2 -c "$HELLO_C_DIR/main.c" -o "$HELLO_C_OBJ_DIR/main.o"
+
+clang -target x86_64-unknown-none-elf -c "$HELLO_C_DIR/start.S" \
+    -o "$HELLO_C_OBJ_DIR/start.o"
+
+"$RUST_LLD" -flavor gnu -T "$ROOT_DIR/targets/shard.ld" --gc-sections \
+    "$HELLO_C_OBJ_DIR/start.o" "$HELLO_C_OBJ_DIR/main.o" \
+    -o "$HELLO_C_OBJ_DIR/hello-c.elf"
+
+"$LLVM_OBJCOPY" -O binary "$HELLO_C_OBJ_DIR/hello-c.elf" \
+    "$TARGET_DIR/shard-hello-c.bin"
+
+export COCONUT_SHARD_HELLO_C_BIN="$TARGET_DIR/shard-hello-c.bin"
 
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \

@@ -369,6 +369,13 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     let (start, end) = shard::fs_reader_binary();
     shard::create(start, end, "fs-reader", shard::Priority::Normal);
 
+    // Create C FFI demo shard
+    static HELLO_C_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-hello-c.bin"));
+    let start = HELLO_C_BIN.as_ptr();
+    // Sound: pointer arithmetic stays within the included binary's bounds.
+    let end = unsafe { start.add(HELLO_C_BIN.len()) };
+    shard::create(start, end, "hello-c", shard::Priority::Normal);
+
     serial_println!();
 
     // Unmask PIT timer IRQ and enable interrupts
