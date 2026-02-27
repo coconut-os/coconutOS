@@ -4,4 +4,12 @@ members = [
     "crates/coconut-boot",
     "crates/coconut-supervisor",
     "crates/coconut-shared",
+    "crates/coconut-rt",
+    "crates/coconut-shard-gpu",
+]
+# Shard crates use a different target — exclude from bare `cargo build`
+default-members = [
+    "crates/coconut-boot",
+    "crates/coconut-supervisor",
+    "crates/coconut-shared",
 ]

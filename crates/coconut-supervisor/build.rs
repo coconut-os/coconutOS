@@ -162,5 +162,12 @@ fn main() {
     // Write the image
     std::fs::write(&out_path, &img).expect("failed to write rootfs.ext2");
 
+    // Copy GPU shard flat binary into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_GPU_BIN") {
+        let dst = Path::new(&out_dir).join("shard-gpu.bin");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-gpu.bin");
+        println!("cargo::rerun-if-changed={}", shard_path);
+    }
+
     println!("cargo::rerun-if-changed=build.rs");
 }

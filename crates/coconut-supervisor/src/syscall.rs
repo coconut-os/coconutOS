@@ -92,13 +92,20 @@ pub fn init() {
 ///   - RSP is still user RSP (not switched by hardware!)
 ///   - RDI, RSI, RDX = syscall args (System V convention from user code)
 ///   - RAX = syscall number
+///
+/// User RSP is pushed on the per-shard kernel stack so it survives context
+/// switches (e.g. when a shard blocks on channel_recv and another shard runs).
 #[unsafe(naked)]
 #[no_mangle]
 unsafe extern "C" fn syscall_entry() {
     naked_asm!(
-        // Save user RSP, load kernel RSP
+        // Save user RSP to temp, switch to per-shard kernel stack
         "mov [{user_rsp}], rsp",
         "mov rsp, [{kernel_rsp}]",
+
+        // Save user RSP on kernel stack — survives context switches since
+        // each shard has its own kernel stack saved/restored by context_switch.
+        "push QWORD PTR [{user_rsp}]",
 
         // Push user context for restore after syscall
         "push rcx",             // user RIP
@@ -138,8 +145,9 @@ unsafe extern "C" fn syscall_entry() {
         "pop r11",              // user RFLAGS
         "pop rcx",              // user RIP
 
-        // Restore user RSP
-        "mov rsp, [{user_rsp}]",
+        // Restore user RSP from kernel stack (not from global — may have been
+        // clobbered by another shard's syscalls during a context switch)
+        "pop rsp",
 
         "sysretq",
 
@@ -248,7 +256,10 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 }
 
 /// Validate that a user buffer [ptr, ptr+len) lies entirely within
-/// allowed user-space regions: code [0x1000, 0x2000) or stack [0x7FF000, 0x800000).
+/// allowed user-space regions: code [0x1000, code_end) or stack [0x7FF000, 0x800000).
+///
+/// `code_end` is read from the current shard's descriptor to support multi-page
+/// code (e.g. Rust shard binaries larger than 4 KiB).
 fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     if len == 0 || len > 4096 {
         return false;
@@ -257,8 +268,10 @@ fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     if end < ptr {
         return false; // overflow
     }
-    // Code region
-    if ptr >= 0x1000 && end <= 0x2000 {
+    // Code region (variable size)
+    let id = shard::current_shard();
+    let code_end = unsafe { (*(&raw const shard::SHARDS))[id].code_end_vaddr };
+    if ptr >= 0x1000 && end <= code_end {
         return true;
     }
     // Stack region

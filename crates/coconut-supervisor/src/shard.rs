@@ -74,6 +74,8 @@ pub struct ShardDescriptor {
     pub vram_unveil_offset: u64,
     /// Unveiled VRAM size (0 = not yet unveiled, DMA unrestricted).
     pub vram_unveil_size: u64,
+    /// Virtual address past the last code page (default: 0x2000 for single-page).
+    pub code_end_vaddr: u64,
 }
 
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
@@ -97,6 +99,7 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
         gpu_pledge: u64::MAX,
         vram_unveil_offset: 0,
         vram_unveil_size: 0,
+        code_end_vaddr: SHARD_CODE_VADDR + 0x1000,
     }
 }; MAX_SHARDS];
 
@@ -217,19 +220,32 @@ pub fn create(
         }
     }
 
-    // 3. Allocate code frame, copy shard binary, map at 0x1000 (R+X, USER)
-    let code_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc code frame");
-    shard.allocated_frames[shard.frame_count] = code_phys;
-    shard.frame_count += 1;
-
+    // 3. Allocate code frames, copy shard binary, map at 0x1000+ (R+X, USER)
     let code_size = binary_end as usize - binary_start as usize;
-    let code_dest = vmm::phys_to_virt(code_phys);
-    unsafe {
-        core::ptr::copy_nonoverlapping(binary_start, code_dest, code_size);
-    }
+    let code_pages = (code_size + 4095) / 4096;
+    let code_end = SHARD_CODE_VADDR + (code_pages as u64) * 4096;
 
-    // Map code page: PRESENT | USER (readable + executable, not writable, not NX)
-    vmm::map_4k(pml4_phys, SHARD_CODE_VADDR, code_phys, PTE_USER);
+    for page_idx in 0..code_pages {
+        let code_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc code frame");
+        shard.allocated_frames[shard.frame_count] = code_phys;
+        shard.frame_count += 1;
+
+        // Copy up to 4096 bytes for this page
+        let page_start = page_idx * 4096;
+        let copy_len = (code_size - page_start).min(4096);
+        let code_dest = vmm::phys_to_virt(code_phys);
+        unsafe {
+            core::ptr::copy_nonoverlapping(binary_start.add(page_start), code_dest, copy_len);
+        }
+
+        vmm::map_4k(
+            pml4_phys,
+            SHARD_CODE_VADDR + (page_idx as u64) * 4096,
+            code_phys,
+            PTE_USER,
+        );
+    }
+    shard.code_end_vaddr = code_end;
 
     // 4. Allocate stack frame (zeroed), map at 0x7FF000 (R+W, USER, NX)
     let stack_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc stack frame");

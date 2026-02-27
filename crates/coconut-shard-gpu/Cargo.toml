@@ -1,0 +1,8 @@
+[package]
+name = "coconut-shard-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+coconut-rt = { path = "../coconut-rt" }
+coconut-shared = { path = "../coconut-shared" }

@@ -29,6 +29,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "coconut-rt"
+version = "0.1.0"
+dependencies = [
+ "coconut-shared",
+]
+
+[[package]]
+name = "coconut-shard-gpu"
+version = "0.1.0"
+dependencies = [
+ "coconut-rt",
+ "coconut-shared",
+]
+
+[[package]]
 name = "coconut-shared"
 version = "0.1.0"
 

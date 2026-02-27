@@ -31,13 +31,13 @@ Multiple inference shards with strong isolation on a single GPU.
 - [x] **2.3** Inter-shard GPU DMA (pipeline parallelism)
 - [x] **2.4** `pledge_gpu` / `unveil_vram` enforcement
 - [x] **2.5** GPU ASLR
-- [ ] **2.6** Side-channel isolation testing and hardening
+- [x] **2.6** Side-channel isolation testing and hardening
 
 ## Inference Stack — Planned
 
 End-to-end LLM inference on coconutOS.
 
-- [ ] **3.1** Inference runtime library (Rust API)
+- [x] **3.1** Inference runtime library (Rust API)
 - [ ] **3.2** C ABI / FFI layer
 - [ ] **3.3** Port llama.cpp as proof-of-concept inference shard
 - [ ] **3.4** Inference pipeline protocol (multi-shard pipeline parallelism)

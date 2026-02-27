@@ -34,6 +34,26 @@ for cmd in qemu-system-x86_64 mformat mcopy; do
     fi
 done
 
+echo "==> Building coconut-shard-gpu (release)..."
+cargo build -p coconut-shard-gpu --target "$ROOT_DIR/targets/x86_64-coconut-shard.json" --release \
+    --manifest-path "$ROOT_DIR/Cargo.toml" -Zjson-target-spec
+
+SHARD_ELF="$TARGET_DIR/x86_64-coconut-shard/release/coconut-shard-gpu"
+if [ ! -f "$SHARD_ELF" ]; then
+    echo "ERROR: Shard ELF not found at $SHARD_ELF"
+    exit 1
+fi
+
+# Convert ELF to flat binary for embedding in the supervisor
+LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin/llvm-objcopy"
+if [ ! -f "$LLVM_OBJCOPY" ]; then
+    # Fallback to PATH
+    LLVM_OBJCOPY="llvm-objcopy"
+fi
+"$LLVM_OBJCOPY" -O binary "$SHARD_ELF" "$TARGET_DIR/shard-gpu.bin"
+
+export COCONUT_SHARD_GPU_BIN="$TARGET_DIR/shard-gpu.bin"
+
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \
     --manifest-path "$ROOT_DIR/Cargo.toml"
