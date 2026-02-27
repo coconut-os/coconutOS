@@ -5,6 +5,8 @@
 //! Dispatches compute commands through a VRAM-based command ring. Uses QEMU's
 //! standard VGA (1234:1111) with CPU-simulated compute as the dispatch backend.
 
+use crate::capability;
+use crate::channel;
 use crate::frame;
 use crate::pci;
 use crate::shard::{self, Priority};
@@ -12,14 +14,50 @@ use crate::vmm::{
     self, PTE_CACHE_DISABLE, PTE_NO_EXECUTE, PTE_USER, PTE_WRITABLE, PTE_WRITE_THROUGH,
 };
 
-/// User virtual address where the MMIO register BAR is mapped.
-const GPU_MMIO_VADDR: u64 = 0x1000_0000;
-
-/// User virtual address where the VRAM/framebuffer BAR is mapped.
-const GPU_VRAM_VADDR: u64 = 0x2000_0000;
-
 /// Maximum VRAM bytes to map (limits page table frame consumption).
 const MAX_VRAM_MAP: u64 = 32 * 1024 * 1024;
+
+/// ASLR region: [0x800000, 0x3F000000). Above stack, within PML4[0]/PDPT[0].
+const ASLR_START: u64 = 0x80_0000;
+const ASLR_END: u64 = 0x3F00_0000;
+
+// ---------------------------------------------------------------------------
+// PRNG — xorshift64 seeded from RDTSC for ASLR entropy
+// ---------------------------------------------------------------------------
+
+/// Single-core, seeded once in init() before shard creation.
+static mut PRNG_STATE: u64 = 0;
+
+fn prng_seed() {
+    let tsc: u64;
+    // Sound: rdtsc is always available on x86-64, no memory side-effects
+    unsafe {
+        core::arch::asm!(
+            "rdtsc", "shl rdx, 32", "or rax, rdx",
+            out("rax") tsc, out("rdx") _,
+            options(nomem, nostack),
+        );
+    }
+    // Ensure non-zero state (xorshift requirement)
+    unsafe { *(&raw mut PRNG_STATE) = tsc | 1; }
+}
+
+fn prng_next() -> u64 {
+    let mut s = unsafe { *(&raw const PRNG_STATE) };
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    unsafe { *(&raw mut PRNG_STATE) = s; }
+    s
+}
+
+/// Generate a random page-aligned virtual address for a mapping of `map_size` bytes.
+fn random_vaddr(map_size: u64) -> u64 {
+    let range = ASLR_END - ASLR_START - map_size;
+    let pages = range / 4096;
+    let offset = (prng_next() % pages) * 4096;
+    ASLR_START + offset
+}
 
 const MAX_GPU_PARTITIONS: usize = 2;
 const TOTAL_VIRTUAL_CUS: u32 = 8;
@@ -37,6 +75,14 @@ struct GpuPartition {
     owner_shard: usize,
 }
 
+/// Kernel-mapped VRAM base pointer. Set during init() via vmm::map_mmio() so
+/// the DMA handler can copy between partitions without a user mapping.
+static mut VRAM_KERN_PTR: *mut u8 = core::ptr::null_mut();
+/// Physical base address of the VRAM BAR, saved for offset calculations.
+static mut VRAM_PHYS_BASE: u64 = 0;
+/// Total VRAM BAR size in bytes.
+static mut VRAM_TOTAL_SIZE: u64 = 0;
+
 // Single-core, no contention. Accessed only from gpu::init().
 static mut PARTITIONS: [GpuPartition; MAX_GPU_PARTITIONS] = [const {
     GpuPartition {
@@ -48,6 +94,189 @@ static mut PARTITIONS: [GpuPartition; MAX_GPU_PARTITIONS] = [const {
     }
 }; MAX_GPU_PARTITIONS];
 static mut PARTITION_COUNT: usize = 0;
+
+// ---------------------------------------------------------------------------
+// pledge / unveil handlers
+// ---------------------------------------------------------------------------
+
+/// Handle SYS_GPU_PLEDGE: monotonically restrict allowed syscall categories.
+///
+/// Performs `shard.gpu_pledge &= mask` — can only remove permissions, never add.
+pub fn handle_gpu_pledge(mask: u64) -> u64 {
+    let id = shard::current_shard();
+    let shard = unsafe { &mut (*(&raw mut shard::SHARDS))[id] };
+    shard.gpu_pledge &= mask;
+    crate::serial_println!("Shard {}: GPU pledge {:#x}", id, shard.gpu_pledge);
+    0
+}
+
+/// Handle SYS_GPU_UNVEIL: lock the VRAM range this shard may access via DMA.
+///
+/// One-shot: subsequent calls return u64::MAX. Validates offset+size fits
+/// within the shard's partition VRAM.
+pub fn handle_gpu_unveil(offset: u64, size: u64) -> u64 {
+    let id = shard::current_shard();
+    let shard = unsafe { &mut (*(&raw mut shard::SHARDS))[id] };
+
+    // One-shot: already unveiled
+    if shard.vram_unveil_size != 0 {
+        return u64::MAX;
+    }
+
+    if size == 0 {
+        return u64::MAX;
+    }
+
+    // Find caller's partition to validate range
+    let count = unsafe { *(&raw const PARTITION_COUNT) };
+    let mut part_vram_size = 0u64;
+    for i in 0..count {
+        let p = unsafe { &(*(&raw const PARTITIONS))[i] };
+        if p.owner_shard == id {
+            part_vram_size = p.vram_size;
+            break;
+        }
+    }
+
+    if part_vram_size == 0 {
+        return u64::MAX;
+    }
+
+    // Validate range fits within partition
+    if offset.checked_add(size).is_none() || offset + size > part_vram_size {
+        return u64::MAX;
+    }
+
+    shard.vram_unveil_offset = offset;
+    shard.vram_unveil_size = size;
+
+    crate::serial_println!(
+        "Shard {}: VRAM unveiled [{:#x}, {:#x})",
+        id,
+        offset,
+        offset + size
+    );
+    0
+}
+
+/// Check whether a DMA range [offset, offset+len) falls within a shard's unveiled VRAM.
+/// Returns true if the shard has not unveiled (unrestricted) or the range is within bounds.
+fn unveil_allows(shard_id: usize, offset: u64, len: u64) -> bool {
+    let shard = unsafe { &(*(&raw const shard::SHARDS))[shard_id] };
+
+    // Not unveiled → unrestricted
+    if shard.vram_unveil_size == 0 {
+        return true;
+    }
+
+    let end = match offset.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+
+    offset >= shard.vram_unveil_offset && end <= shard.vram_unveil_offset + shard.vram_unveil_size
+}
+
+// ---------------------------------------------------------------------------
+// DMA handler — kernel-mediated VRAM copy between partitions
+// ---------------------------------------------------------------------------
+
+/// Handle SYS_GPU_DMA: copy data between VRAM partitions.
+///
+/// a0 = target partition ID, a1 = source VRAM offset (within caller's partition),
+/// a2 = packed (dst_vram_offset << 32 | len).
+/// Returns 0 on success, u64::MAX on error.
+pub fn handle_dma(target_part: u64, src_offset: u64, packed_dst_len: u64) -> u64 {
+    let caller = shard::current_shard();
+    let dst_offset = packed_dst_len >> 32;
+    let len = packed_dst_len & 0xFFFF_FFFF;
+
+    if len == 0 {
+        return u64::MAX;
+    }
+
+    let target_id = target_part as usize;
+    let count = unsafe { *(&raw const PARTITION_COUNT) };
+    if target_id >= count {
+        return u64::MAX;
+    }
+
+    // Find caller's partition
+    let mut src_part_idx = usize::MAX;
+    for i in 0..count {
+        let p = unsafe { &(*(&raw const PARTITIONS))[i] };
+        if p.owner_shard == caller {
+            src_part_idx = i;
+            break;
+        }
+    }
+    if src_part_idx == usize::MAX || src_part_idx == target_id {
+        return u64::MAX;
+    }
+
+    // Check CAP_GPU_DMA for the target partition
+    if !capability::check(
+        caller,
+        coconut_shared::CAP_GPU_DMA,
+        target_id as u32,
+        coconut_shared::RIGHT_GPU_DMA_WRITE,
+    ) {
+        crate::serial_println!("Shard {}: DMA capability denied for partition {}", caller, target_id);
+        return u64::MAX;
+    }
+
+    let src_part = unsafe { &(*(&raw const PARTITIONS))[src_part_idx] };
+    let dst_part = unsafe { &(*(&raw const PARTITIONS))[target_id] };
+
+    // Bounds-check within each partition's VRAM slice
+    if src_offset.checked_add(len).is_none() || src_offset + len > src_part.vram_size {
+        return u64::MAX;
+    }
+    if dst_offset.checked_add(len).is_none() || dst_offset + len > dst_part.vram_size {
+        return u64::MAX;
+    }
+
+    // Enforce unveil on source shard (caller)
+    if !unveil_allows(caller, src_offset, len) {
+        crate::serial_println!("Shard {}: DMA source outside unveiled range", caller);
+        return u64::MAX;
+    }
+
+    // Enforce unveil on destination shard
+    let dst_shard = dst_part.owner_shard;
+    if dst_shard != usize::MAX && !unveil_allows(dst_shard, dst_offset, len) {
+        crate::serial_println!("Shard {}: DMA dest outside target's unveiled range", caller);
+        return u64::MAX;
+    }
+
+    let kern_ptr = unsafe { *(&raw const VRAM_KERN_PTR) };
+    if kern_ptr.is_null() {
+        return u64::MAX;
+    }
+
+    // Copy via kernel VRAM mapping: src partition's absolute offset → dst partition's absolute offset
+    let src_abs = src_part.vram_offset + src_offset;
+    let dst_abs = dst_part.vram_offset + dst_offset;
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            kern_ptr.add(src_abs as usize),
+            kern_ptr.add(dst_abs as usize),
+            len as usize,
+        );
+    }
+
+    crate::serial_println!(
+        "GPU DMA: {} bytes, partition {} offset {:#x} -> partition {} offset {:#x}",
+        len,
+        src_part_idx,
+        src_offset,
+        target_id,
+        dst_offset
+    );
+
+    0
+}
 
 // ---------------------------------------------------------------------------
 // Embedded GPU HAL shard binary
@@ -84,9 +313,24 @@ core::arch::global_asm!(
     "cmp DWORD PTR [r15], 0x47504346",         // magic "GPCF"
     "jne 2f",
 
-    // Load device BAR virtual bases into callee-saved registers
-    "mov r13, 0x20000000",              // GPU_VRAM_VADDR
-    "mov r14, 0x10000000",              // GPU_MMIO_VADDR
+    // --- SYS_GPU_PLEDGE: restrict to SERIAL + CHANNEL + GPU_DMA (bits 0|1|2 = 7) ---
+    "mov rdi, 7",
+    "mov rax, 41",                      // SYS_GPU_PLEDGE
+    "syscall",
+    "cmp rax, 0",
+    "jne 2f",
+
+    // --- SYS_GPU_UNVEIL: expose entire partition VRAM [0, vram_size) ---
+    "xor edi, edi",                     // offset = 0
+    "mov esi, DWORD PTR [r15 + 8]",    // size = vram_size from config page
+    "mov rax, 42",                      // SYS_GPU_UNVEIL
+    "syscall",
+    "cmp rax, 0",
+    "jne 2f",
+
+    // Load ASLR'd BAR virtual bases from config page
+    "mov r13, QWORD PTR [r15 + 0x18]", // VRAM vaddr from config page
+    "mov r14, QWORD PTR [r15 + 0x20]", // MMIO vaddr from config page
 
     // --- VRAM write/readback test (validates device access before allocator init) ---
     "mov eax, 0xDEADBEEF",
@@ -309,11 +553,93 @@ core::arch::global_asm!(
     "mov rax, 1",                       // SYS_SERIAL_WRITE
     "syscall",
 
+    // --- DMA test phase: branch on partition_id from config page ---
+    "mov r15, 0x4000",                  // config page
+    "mov eax, DWORD PTR [r15 + 4]",    // partition_id
+    "test eax, eax",
+    "jnz 60f",                          // partition 1 → receiver path
+
+    // --- Partition 0 (sender): write test pattern, DMA to partition 1 ---
+    // Write [1, 2, ..., 16] (64 bytes of u32) at VRAM + 0x100000
+    "lea rdi, [r13 + 0x100000]",
+    "mov ecx, 1",
+    "61:",
+    "mov DWORD PTR [rdi], ecx",
+    "add rdi, 4",
+    "inc ecx",
+    "cmp ecx, 17",
+    "jb 61b",
+
+    // SYS_GPU_DMA(target=1, src_offset=0x100000, packed=(0x100000<<32)|64)
+    "mov rdi, 1",                       // target partition 1
+    "mov rsi, 0x100000",                // src VRAM offset
+    "mov rdx, 0x100000",
+    "shl rdx, 32",
+    "or rdx, 64",                       // packed: dst_offset << 32 | len
+    "mov rax, 40",                      // SYS_GPU_DMA
+    "syscall",
+    "cmp rax, 0",
+    "jne 2f",                           // DMA failed
+
+    // SYS_CHANNEL_SEND(ch=0, stack_buf, 3) — signal to partition 1
+    // RSP is at 0x800000 (stack top), must allocate space below it
+    "sub rsp, 8",
+    "mov BYTE PTR [rsp], 0x44",         // 'D'
+    "mov BYTE PTR [rsp + 1], 0x4F",     // 'O'
+    "mov BYTE PTR [rsp + 2], 0x4E",     // 'N'
+    "mov rdi, 0",                       // channel 0
+    "mov rsi, rsp",                     // buf on stack
+    "mov rdx, 3",                       // len = 3
+    "mov rax, 21",                      // SYS_CHANNEL_SEND
+    "syscall",
+    "add rsp, 8",
+
+    // Print "GPU DMA: sent 64 bytes to partition 1\n"
+    "lea rdi, [rip + 7f]",
+    "mov rsi, 38",
+    "mov rax, 1",                       // SYS_SERIAL_WRITE
+    "syscall",
+
     // SYS_EXIT(0)
     "xor edi, edi",
     "mov rax, 0",
     "syscall",
     "1: hlt",
+    "jmp 1b",
+
+    // --- Partition 1 (receiver): wait for signal, verify DMA'd data ---
+    "60:",
+    // SYS_CHANNEL_RECV(ch=0, stack_buf, 8) — blocks until sender signals
+    // RSP is at 0x800000 (stack top), must allocate space below it
+    "sub rsp, 8",
+    "mov rdi, 0",                       // channel 0
+    "mov rsi, rsp",                     // buf on stack
+    "mov rdx, 8",                       // max_len
+    "mov rax, 22",                      // SYS_CHANNEL_RECV
+    "syscall",
+    "add rsp, 8",
+
+    // Verify [1, 2, ..., 16] at VRAM + 0x100000
+    "lea rdi, [r13 + 0x100000]",
+    "mov ecx, 1",
+    "62:",
+    "cmp DWORD PTR [rdi], ecx",
+    "jne 2f",
+    "add rdi, 4",
+    "inc ecx",
+    "cmp ecx, 17",
+    "jb 62b",
+
+    // Print "GPU DMA: recv ok, verified\n"
+    "lea rdi, [rip + 8f]",
+    "mov rsi, 27",
+    "mov rax, 1",                       // SYS_SERIAL_WRITE
+    "syscall",
+
+    // SYS_EXIT(0)
+    "xor edi, edi",
+    "mov rax, 0",
+    "syscall",
     "jmp 1b",
 
     // --- Failure path ---
@@ -431,6 +757,8 @@ core::arch::global_asm!(
     "4: .ascii \"GPU compute: FAIL\\n\"",
     "5: .ascii \"GPU perf: 1024 iters, \"",
     "6: .ascii \" cycles\\n\"",
+    "7: .ascii \"GPU DMA: sent 64 bytes to partition 1\\n\"",
+    "8: .ascii \"GPU DMA: recv ok, verified\\n\"",
 
     "_gpu_hal_end:",
 );
@@ -485,7 +813,13 @@ fn create_partitions(vram_size: u64) {
 /// The config page is a single RAM frame with partition parameters that the
 /// HAL shard reads at startup. Mapped read-only (no PTE_WRITABLE) with NX.
 /// Tracked in shard.allocated_frames for cleanup on destroy.
-fn create_config_page(shard_id: usize, pml4_phys: u64, partition: &GpuPartition) {
+fn create_config_page(
+    shard_id: usize,
+    pml4_phys: u64,
+    partition: &GpuPartition,
+    vram_vaddr: u64,
+    mmio_vaddr: u64,
+) {
     let config_phys = frame::alloc_frame_zeroed().expect("GPU config frame");
 
     // Write partition parameters via HHDM
@@ -495,6 +829,9 @@ fn create_config_page(shard_id: usize, pml4_phys: u64, partition: &GpuPartition)
         core::ptr::write_volatile(base.add(4) as *mut u32, partition.id);
         core::ptr::write_volatile(base.add(8) as *mut u64, partition.vram_size);
         core::ptr::write_volatile(base.add(0x10) as *mut u32, partition.cu_count);
+        // ASLR: randomized BAR virtual addresses for this shard
+        core::ptr::write_volatile(base.add(0x18) as *mut u64, vram_vaddr);
+        core::ptr::write_volatile(base.add(0x20) as *mut u64, mmio_vaddr);
     }
 
     // Map as user-readable, not writable, not executable
@@ -520,11 +857,12 @@ fn create_config_page(shard_id: usize, pml4_phys: u64, partition: &GpuPartition)
 ///
 /// Only maps the partition's portion of the VRAM BAR, starting at
 /// vram_bar.phys_base + partition.vram_offset for partition.vram_size bytes.
-/// The shard sees VRAM at GPU_VRAM_VADDR regardless of which partition it owns.
+/// The shard sees VRAM at the ASLR-randomized `vram_vaddr`.
 fn map_vram_partition(
     pml4_phys: u64,
     vram_bar: &pci::BarInfo,
     partition: &GpuPartition,
+    vram_vaddr: u64,
 ) {
     let phys_start = vram_bar.phys_base + partition.vram_offset;
     let map_size = partition.vram_size.min(MAX_VRAM_MAP);
@@ -532,7 +870,7 @@ fn map_vram_partition(
 
     let mut offset = 0u64;
     while offset < map_size {
-        vmm::map_4k(pml4_phys, GPU_VRAM_VADDR + offset, phys_start + offset, flags);
+        vmm::map_4k(pml4_phys, vram_vaddr + offset, phys_start + offset, flags);
         offset += 4096;
     }
 
@@ -541,7 +879,7 @@ fn map_vram_partition(
         partition.id,
         vram_bar.phys_base,
         partition.vram_offset,
-        GPU_VRAM_VADDR,
+        vram_vaddr,
         map_size / 4096
     );
 }
@@ -646,25 +984,79 @@ pub fn init() {
         }
     };
 
+    // Map VRAM BAR into kernel virtual space for DMA handler access.
+    // VRAM is above the 1 GiB HHDM range, so we need an explicit MMIO mapping.
+    let vram_kern = vmm::map_mmio(vram.phys_base, vram.size);
+    unsafe {
+        *(&raw mut VRAM_KERN_PTR) = vram_kern;
+        *(&raw mut VRAM_PHYS_BASE) = vram.phys_base;
+        *(&raw mut VRAM_TOTAL_SIZE) = vram.size;
+    }
+    crate::serial_println!(
+        "GPU: kernel VRAM mapping at {:p} ({} MiB)",
+        vram_kern,
+        vram.size / (1024 * 1024)
+    );
+
     // Partition VRAM and virtual CUs
     create_partitions(vram.size);
+
+    // Seed PRNG from TSC before creating shards — provides per-boot entropy
+    prng_seed();
 
     // Create one HAL shard per partition
     let (start, end) = hal_binary();
     let count = unsafe { *(&raw const PARTITION_COUNT) };
+    // Track shard IDs for capability setup
+    let mut shard_ids = [usize::MAX; MAX_GPU_PARTITIONS];
 
     for pi in 0..count {
         let partition = unsafe { &(*(&raw const PARTITIONS))[pi] };
+        let vram_map_size = partition.vram_size.min(MAX_VRAM_MAP);
+
+        // ASLR: randomize VRAM and MMIO virtual addresses per shard
+        let vram_vaddr = random_vaddr(vram_map_size);
+        let mut mmio_vaddr = random_vaddr(mmio.size);
+        // Retry if MMIO overlaps VRAM range (vanishingly unlikely in ~1 GiB space)
+        while mmio_vaddr < vram_vaddr + vram_map_size && vram_vaddr < mmio_vaddr + mmio.size {
+            mmio_vaddr = random_vaddr(mmio.size);
+        }
+
+        crate::serial_println!(
+            "GPU: ASLR shard {}: VRAM {:#x}, MMIO {:#x}",
+            pi,
+            vram_vaddr,
+            mmio_vaddr
+        );
+
         let id = shard::create(start, end, "gpu-hal", Priority::High);
         let pml4_phys = unsafe { (*(&raw const shard::SHARDS))[id].pml4_phys };
 
-        create_config_page(id, pml4_phys, partition);
-        map_bar_to_shard(pml4_phys, &mmio, GPU_MMIO_VADDR, mmio.size, "MMIO");
-        map_vram_partition(pml4_phys, &vram, partition);
+        create_config_page(id, pml4_phys, partition, vram_vaddr, mmio_vaddr);
+        map_bar_to_shard(pml4_phys, &mmio, mmio_vaddr, mmio.size, "MMIO");
+        map_vram_partition(pml4_phys, &vram, partition, vram_vaddr);
 
         unsafe {
             (*(&raw mut PARTITIONS))[pi].owner_shard = id;
         }
+        shard_ids[pi] = id;
         crate::serial_println!("GPU: HAL shard {} created (partition {})", id, pi);
+    }
+
+    // Set up DMA channel and capabilities between partition 0 and partition 1
+    if count >= 2 {
+        let s0 = shard_ids[0];
+        let s1 = shard_ids[1];
+
+        // Channel 0: shard 0 <-> shard 1
+        channel::init(0, s0, s1);
+        crate::serial_println!("GPU: DMA channel 0 (shard {} <-> shard {})", s0, s1);
+
+        // Shard 0: SEND on channel 0
+        capability::grant_to_shard(s0, coconut_shared::CAP_CHANNEL, 0, coconut_shared::RIGHT_CHANNEL_SEND);
+        // Shard 1: RECV on channel 0
+        capability::grant_to_shard(s1, coconut_shared::CAP_CHANNEL, 0, coconut_shared::RIGHT_CHANNEL_RECV);
+        // Shard 0: DMA write to partition 1
+        capability::grant_to_shard(s0, coconut_shared::CAP_GPU_DMA, 1, coconut_shared::RIGHT_GPU_DMA_WRITE);
     }
 }

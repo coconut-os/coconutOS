@@ -22,8 +22,20 @@ pub const SYS_FS_STAT: u64 = 32;
 /// Close an open file. a0=fd. Returns 0.
 pub const SYS_FS_CLOSE: u64 = 33;
 
+/// GPU DMA: copy data between VRAM partitions. a0=target_partition, a1=src_offset, a2=packed(dst<<32|len).
+pub const SYS_GPU_DMA: u64 = 40;
+/// Restrict allowed syscall categories (monotonic). a0=bitmask of allowed categories.
+pub const SYS_GPU_PLEDGE: u64 = 41;
+/// Lock VRAM range for DMA (one-shot). a0=offset, a1=size.
+pub const SYS_GPU_UNVEIL: u64 = 42;
+
 /// Yield the current time slice voluntarily.
 pub const SYS_YIELD: u64 = 62;
+
+// GPU pledge bits — bitmask of allowed syscall categories after pledge
+pub const PLEDGE_SERIAL: u64 = 1 << 0;
+pub const PLEDGE_CHANNEL: u64 = 1 << 1;
+pub const PLEDGE_GPU_DMA: u64 = 1 << 2;
 
 // Capability syscalls
 /// Grant a capability copy to another shard. a0=handle, a1=target_shard, a2=new_rights.
@@ -39,7 +51,10 @@ pub const SYS_CAP_INSPECT: u64 = 14;
 pub const CAP_CHANNEL: u8 = 1;
 pub const CAP_SHARD: u8 = 2;
 pub const CAP_MEMORY: u8 = 3;
-// 4-8 reserved for GPU, VRAM, IRQ, IO, TIMER
+pub const CAP_GPU_DMA: u8 = 4;
+
+// GPU DMA capability rights
+pub const RIGHT_GPU_DMA_WRITE: u16 = 1 << 0;
 
 // Channel capability rights (bitmask)
 pub const RIGHT_CHANNEL_SEND: u16 = 1 << 0;

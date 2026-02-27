@@ -10,6 +10,7 @@ use crate::capability;
 use crate::channel;
 use crate::fs;
 use crate::gdt;
+use crate::gpu;
 use crate::scheduler;
 use crate::shard;
 
@@ -148,6 +149,44 @@ unsafe extern "C" fn syscall_entry() {
     );
 }
 
+/// Check whether the current shard's pledge allows the given syscall number.
+///
+/// EXIT, YIELD, GPU_PLEDGE, and GPU_UNVEIL are always allowed regardless of pledge state.
+/// Other syscalls are mapped to pledge bits: SERIAL_WRITE → PLEDGE_SERIAL,
+/// CHANNEL_SEND/RECV → PLEDGE_CHANNEL, GPU_DMA → PLEDGE_GPU_DMA.
+/// CAP_*, FS_*, and unknown syscalls are denied once any pledge is active.
+fn pledge_allows(nr: u64) -> bool {
+    let id = shard::current_shard();
+    let pledge = unsafe { (*(&raw const shard::SHARDS))[id].gpu_pledge };
+
+    // Unrestricted — no pledge has been called
+    if pledge == u64::MAX {
+        return true;
+    }
+
+    // Always-allowed syscalls (independent of pledge)
+    match nr {
+        coconut_shared::SYS_EXIT
+        | coconut_shared::SYS_YIELD
+        | coconut_shared::SYS_GPU_PLEDGE
+        | coconut_shared::SYS_GPU_UNVEIL => return true,
+        _ => {}
+    }
+
+    // Map syscall to pledge bit
+    let required = match nr {
+        coconut_shared::SYS_SERIAL_WRITE => coconut_shared::PLEDGE_SERIAL,
+        coconut_shared::SYS_CHANNEL_SEND | coconut_shared::SYS_CHANNEL_RECV => {
+            coconut_shared::PLEDGE_CHANNEL
+        }
+        coconut_shared::SYS_GPU_DMA => coconut_shared::PLEDGE_GPU_DMA,
+        // CAP_*, FS_*, and anything else: denied once pledged
+        _ => return false,
+    };
+
+    pledge & required != 0
+}
+
 /// Rust syscall dispatcher.
 ///
 /// Returns a result value in RAX (0 = success for most calls).
@@ -155,6 +194,16 @@ unsafe extern "C" fn syscall_entry() {
 /// to the supervisor via schedule_yield_exit.
 #[no_mangle]
 extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
+    // Enforce pledge restrictions before dispatching
+    if !pledge_allows(nr) {
+        crate::serial_println!(
+            "Shard {}: syscall {} denied by pledge",
+            shard::current_shard(),
+            nr
+        );
+        return u64::MAX;
+    }
+
     match nr {
         coconut_shared::SYS_EXIT => {
             shard::handle_sys_exit(a0);
@@ -184,6 +233,9 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         coconut_shared::SYS_FS_READ => fs::handle_fs_read(a0, a1, a2),
         coconut_shared::SYS_FS_STAT => fs::handle_fs_stat(a0),
         coconut_shared::SYS_FS_CLOSE => fs::handle_fs_close(a0),
+        coconut_shared::SYS_GPU_DMA => gpu::handle_dma(a0, a1, a2),
+        coconut_shared::SYS_GPU_PLEDGE => gpu::handle_gpu_pledge(a0),
+        coconut_shared::SYS_GPU_UNVEIL => gpu::handle_gpu_unveil(a0, a1),
         coconut_shared::SYS_YIELD => {
             scheduler::handle_sys_yield();
             0

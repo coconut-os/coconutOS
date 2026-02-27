@@ -68,6 +68,12 @@ pub struct ShardDescriptor {
     pub blocked_on_channel: usize,
     /// Capability table for this shard.
     pub caps: [CapEntry; MAX_CAPS_PER_SHARD],
+    /// Allowed syscall categories (u64::MAX = unrestricted). Monotonically reduced via SYS_GPU_PLEDGE.
+    pub gpu_pledge: u64,
+    /// Unveiled VRAM offset within partition (only meaningful when vram_unveil_size > 0).
+    pub vram_unveil_offset: u64,
+    /// Unveiled VRAM size (0 = not yet unveiled, DMA unrestricted).
+    pub vram_unveil_size: u64,
 }
 
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
@@ -88,6 +94,9 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
             resource_id: 0,
             rights: 0,
         }; MAX_CAPS_PER_SHARD],
+        gpu_pledge: u64::MAX,
+        vram_unveil_offset: 0,
+        vram_unveil_size: 0,
     }
 }; MAX_SHARDS];
 

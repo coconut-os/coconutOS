@@ -28,9 +28,9 @@ Multiple inference shards with strong isolation on a single GPU.
 
 - [x] **2.1** GPU partitioning (CU slicing, VRAM carving)
 - [x] **2.2** Multiple GPU HAL shard instances (one per partition)
-- [ ] **2.3** Inter-shard GPU DMA (pipeline parallelism)
-- [ ] **2.4** `pledge_gpu` / `unveil_vram` enforcement
-- [ ] **2.5** GPU ASLR
+- [x] **2.3** Inter-shard GPU DMA (pipeline parallelism)
+- [x] **2.4** `pledge_gpu` / `unveil_vram` enforcement
+- [x] **2.5** GPU ASLR
 - [ ] **2.6** Side-channel isolation testing and hardening
 
 ## Inference Stack — Planned

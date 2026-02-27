@@ -161,6 +161,7 @@ fn cap_type_name(cap_type: u8) -> &'static str {
         1 => "CHANNEL",
         2 => "SHARD",
         3 => "MEMORY",
+        4 => "GPU_DMA",
         _ => "UNKNOWN",
     }
 }
