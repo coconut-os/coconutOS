@@ -10,7 +10,9 @@ coconutOS/
 ├── .cargo/config.toml      # Per-target rustflags
 ├── rust-toolchain.toml     # Nightly + components
 ├── mise.toml               # Task runner
-├── scripts/qemu-run.sh     # Build + QEMU launcher
+├── scripts/
+│   ├── qemu-run.sh         # Build + QEMU launcher
+│   └── coconut-prof.py     # Host-side profiling report parser
 ├── crates/
 │   ├── coconut-boot/       # UEFI bootloader  (x86_64-unknown-uefi)
 │   ├── coconut-supervisor/ # Microkernel       (x86_64-unknown-none)
@@ -21,7 +23,8 @@ coconutOS/
 │   └── coconut.h           # Header-only C interface to coconutOS syscalls
 ├── shards/
 │   ├── hello-c/            # C FFI demo shard  (start.S + main.c)
-│   └── llama-inference/    # Transformer inference shard (start.S + main.c)
+│   ├── llama-inference/    # Transformer inference shard (start.S + main.c)
+│   └── llama-pipeline/     # Pipeline parallelism shard (start.S + main.c)
 └── targets/
     ├── x86_64-coconut-shard.json  # Custom target for Rust shards
     └── shard.ld            # Shard linker script (flat binary at VA 0x1000)
@@ -102,7 +105,8 @@ target/
 │   └── build/coconut-supervisor-*/out/
 │       ├── shard-gpu-hal.bin       # GPU HAL shard (Rust, flat binary)
 │       ├── shard-hello-c.bin       # C demo shard (flat binary)
-│       └── shard-llama-inference.bin  # Inference shard (flat binary)
+│       ├── shard-llama-inference.bin  # Inference shard (flat binary)
+│       └── shard-llama-pipeline.bin   # Pipeline shard (flat binary)
 ├── x86_64-unknown-uefi/release/
 │   └── coconut-boot.efi           # PE32+ UEFI application
 └── x86_64-coconut-shard/release/

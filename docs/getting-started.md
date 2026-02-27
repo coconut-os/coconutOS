@@ -67,7 +67,7 @@ This single script builds all Rust crates and C shards, then launches QEMU.
 On a successful boot you should see output like:
 
 ```
-coconutOS supervisor v0.3.3 booting...
+coconutOS supervisor v0.3.4 booting...
 Higher-half: page tables built, CR3 switched
 GDT: loaded (7 entries, TSS active)
 IDT: loaded (256 entries, higher-half)
@@ -90,12 +90,29 @@ llama-inference: token 0 -> 'i'
 llama-inference: token 1 -> 't'
 ...
 llama-inference: inference complete (16 tokens)
+llama-pipeline stage 0: forwarding layers 0-0
+llama-pipeline stage 1: forwarding layers 1-1
+...
 
-coconutOS supervisor v0.3.3: all shards completed.
+--- Shard Profiling Summary ---
+ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
+ 0        12            4523         8        45  gpu-hal
+ 1        11            4201         7        42  gpu-hal
+ ...
+
+coconutOS supervisor v0.3.4: all shards completed.
 Halting.
 ```
 
-The system boots, creates GPU HAL shards (2 partitions), a filesystem reader shard, a C FFI demo shard, and a transformer inference shard. The inference shard loads a model from the ext2 ramdisk, runs a 16-token forward pass, and exits. The system halts cleanly after all shards complete.
+The system boots, creates GPU HAL shards (2 partitions), a filesystem reader shard, a C FFI demo shard, a transformer inference shard, and two pipeline shards that split the model across stages via IPC. A per-shard profiling summary is printed before halt. The system halts cleanly after all shards complete.
+
+### Profiling
+
+To parse the profiling summary into a formatted report:
+
+```bash
+./scripts/qemu-run.sh 2>&1 | python3 scripts/coconut-prof.py
+```
 
 ## Next Steps
 

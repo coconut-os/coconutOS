@@ -1,8 +1,8 @@
 # coconutOS Architecture
 
-> **Version:** 0.3.3
+> **Version:** 0.3.4
 > **Date:** 2026-02-27
-> **Status:** GPU isolation complete, inference stack in progress
+> **Status:** GPU isolation complete, inference stack near-complete (profiling done, benchmark remaining)
 
 ---
 
@@ -1210,17 +1210,30 @@ uint64_t coconut_channel_recv(uint64_t ch, void *buf, uint64_t max_len);
 
 C shards are compiled with clang (freestanding x86-64), linked as flat binaries via `targets/shard.ld`, and embedded into the supervisor.
 
-### 11.4 Debugging and Profiling Tools (Planned)
+### 11.4 Debugging and Profiling Tools
 
 | Tool | Purpose | Status |
 |------|---------|--------|
-| `coconut-trace` | System-wide tracing of IPC messages, syscalls, GPU dispatches | Planned (milestone 3.5) |
-| `coconut-prof` | Per-shard GPU profiling: kernel execution time, memory bandwidth, CU utilization | Planned (milestone 3.5) |
+| `coconut-trace` | Per-shard kernel instrumentation: syscall count/cycles, context switches, wall time | Done (milestone 3.5) |
+| `coconut-prof` | Host-side Python script that parses serial profiling output into a formatted report | Done (milestone 3.5) |
 | `coconut-audit` | Query the audit log. Filter by shard, capability type, time range | Planned |
 | `coconut-top` | Real-time dashboard showing shard CPU/GPU utilization, memory usage, IPC throughput | Planned |
 | `coconut-shard` | CLI tool for shard management: create, start, stop, restart, inspect, logs | Planned |
 
-Currently, all debugging is done via serial output (`-serial stdio` in QEMU) and GDB remote debugging. See [debugging.md](debugging.md).
+**coconut-trace** adds lightweight counters to each `ShardDescriptor`: total syscalls dispatched, RDTSC cycles spent in syscall dispatch, context switch count, and wall-clock time (PIT ticks from first schedule to exit). The supervisor prints a summary table to serial before halt. Overhead is minimal (~20 cycles per syscall for two RDTSC reads).
+
+**coconut-prof** (`scripts/coconut-prof.py`) reads serial output and produces a formatted report with per-shard stats, totals, and syscall distribution percentages. It also extracts shard lifecycle events (create, exit, blocked). No external dependencies — stdlib only.
+
+```bash
+# Pipe QEMU output directly
+./scripts/qemu-run.sh 2>&1 | python3 scripts/coconut-prof.py
+
+# Or parse a saved log
+./scripts/qemu-run.sh 2>&1 | tee /tmp/boot.log
+python3 scripts/coconut-prof.py /tmp/boot.log
+```
+
+GDB remote debugging and raw serial output remain available. See [debugging.md](debugging.md).
 
 ---
 
@@ -1320,8 +1333,8 @@ For shard hot-restart, VRAM weight regions can be preserved across restarts (the
 | 3.1 | Inference runtime library (Rust API) | Done |
 | 3.2 | C ABI / FFI layer | Done |
 | 3.3 | Port llama2.c as proof-of-concept inference shard | Done |
-| 3.4 | Inference pipeline protocol (multi-shard pipeline parallelism) | Planned |
-| 3.5 | coconut-trace, coconut-prof tooling | Planned |
+| 3.4 | Inference pipeline protocol (multi-shard pipeline parallelism) | Done |
+| 3.5 | coconut-trace, coconut-prof tooling | Done |
 | 3.6 | Benchmark: Llama 70B inference latency vs. Linux/ROCm baseline | Planned |
 
 ### Phase 4: Hardening & Multi-Vendor — Planned

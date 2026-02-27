@@ -64,7 +64,7 @@ On first build, `rustup` installs the nightly toolchain and components from `rus
 ### Expected Output
 
 ```
-coconutOS supervisor v0.3.3 booting...
+coconutOS supervisor v0.3.4 booting...
 Higher-half: page tables built, CR3 switched
 ...
 CR4: OSFXSR + TSD set
@@ -78,13 +78,16 @@ GPU mem: freed+zeroed, compute ok
 GPU DMA: recv ok, verified
 Hello from coconutFS!
 Hello from C shard!
-llama-inference: loaded model (dim=32, layers=2, vocab=32)
-llama-inference: token 0 -> 'i'
-llama-inference: token 1 -> 't'
-...
 llama-inference: inference complete (16 tokens)
+llama-pipeline stage 0: done
+llama-pipeline stage 1: done
 
-coconutOS supervisor v0.3.3: all shards completed.
+--- Shard Profiling Summary ---
+ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
+ 0        12            4523         8        45  gpu-hal
+ ...
+
+coconutOS supervisor v0.3.4: all shards completed.
 Halting.
 ```
 
@@ -122,13 +125,15 @@ coconutOS/
 │   └── coconut.h              # Header-only C interface to coconutOS syscalls
 ├── shards/
 │   ├── hello-c/               # C FFI demo shard (start.S + main.c)
-│   └── llama-inference/       # Transformer inference shard (start.S + main.c)
+│   ├── llama-inference/       # Transformer inference shard (start.S + main.c)
+│   └── llama-pipeline/        # Pipeline parallelism shard (start.S + main.c)
 ├── targets/
 │   ├── x86_64-coconut-shard.json  # Custom target for Rust shards
 │   └── shard.ld               # Shard linker script (flat binary at VA 0x1000)
 ├── docs/                      # Architecture, build, debugging docs
 ├── scripts/
-│   └── qemu-run.sh            # One-command build + QEMU launch
+│   ├── qemu-run.sh            # One-command build + QEMU launch
+│   └── coconut-prof.py        # Host-side profiling report parser
 └── mise.toml                  # Optional task runner config
 ```
 
@@ -176,7 +181,7 @@ coconutOS/
 | CPU-Only Shard Model (0.1-0.6) | Complete |
 | GPU Bring-Up (1.1-1.6) | Complete |
 | Multi-Shard GPU Isolation (2.1-2.6) | Complete |
-| Inference Stack (3.1-3.3) | In Progress |
+| Inference Stack (3.1-3.5) | In Progress |
 | Hardening & Multi-Vendor | Planned |
 
 See [.claude/ROADMAP.md](.claude/ROADMAP.md) for detailed milestones.

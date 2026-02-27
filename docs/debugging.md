@@ -13,6 +13,12 @@ Messages are prefixed by subsystem:
 
 Shard serial writes (via `SYS_SERIAL_WRITE`) appear without a prefix. The inference shard prefixes its own messages with `llama-inference:`.
 
+Before halt, the supervisor prints a per-shard profiling summary table with syscall counts, average cycles per syscall, context switch counts, and wall time. Use `scripts/coconut-prof.py` to parse this into a formatted report:
+
+```bash
+./scripts/qemu-run.sh 2>&1 | python3 scripts/coconut-prof.py
+```
+
 ## GDB Remote Debugging
 
 ### Start QEMU with GDB stub

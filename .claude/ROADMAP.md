@@ -11,7 +11,7 @@ Functional microkernel with CPU-only shards, no GPU support.
 - [x] **0.5** Capability system (grant, revoke, restrict, inspect)
 - [x] **0.6** Minimal read-only filesystem (ext2 ramdisk, build-time generated)
 
-## GPU Bring-Up — AMD — Next
+## GPU Bring-Up — AMD — Complete
 
 GPU HAL shard for AMD RDNA3/CDNA3, basic compute dispatch.
 
@@ -22,7 +22,7 @@ GPU HAL shard for AMD RDNA3/CDNA3, basic compute dispatch.
 - [x] **1.5** VRAM zeroing on free, W^X enforcement
 - [x] **1.6** Performance baseline: compare GPU compute throughput vs. Linux/ROCm
 
-## Multi-Shard GPU Isolation — Planned
+## Multi-Shard GPU Isolation — Complete
 
 Multiple inference shards with strong isolation on a single GPU.
 
@@ -33,7 +33,7 @@ Multiple inference shards with strong isolation on a single GPU.
 - [x] **2.5** GPU ASLR
 - [x] **2.6** Side-channel isolation testing and hardening
 
-## Inference Stack — Planned
+## Inference Stack — In Progress
 
 End-to-end LLM inference on coconutOS.
 
