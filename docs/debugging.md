@@ -9,9 +9,9 @@ Messages are prefixed by subsystem:
 | Prefix | Source |
 |--------|--------|
 | `[BOOT]` | Bootloader (`coconut-boot`) |
-| `[SUPER]` | Supervisor init (`coconut-supervisor`) |
+| (none) | Supervisor init (`coconut-supervisor`) |
 
-Shard serial writes (via `SYS_SERIAL_WRITE`) appear without a prefix.
+Shard serial writes (via `SYS_SERIAL_WRITE`) appear without a prefix. The inference shard prefixes its own messages with `llama-inference:`.
 
 ## GDB Remote Debugging
 
@@ -72,6 +72,9 @@ Diagnosis: Add serial prints at each init stage to find the last successful step
 - **Segment selector wrong**: GDT index or RPL mismatch. Check that `sysretq` uses the correct CS/SS selectors (STAR MSR bits [63:48]).
 - **Canonical address violation**: Jumping to a non-canonical address (bits 47-63 not all same).
 - **Privileged instruction in ring 3**: User code executing `cli`, `hlt`, `in`/`out`, etc.
+- **CR4.TSD violation**: User-mode `rdtsc`/`rdtscp` causes #GP when CR4.TSD is set (this is intentional — prevents timing side-channels).
+
+User-mode #GP faults are caught by the GPF handler, which kills the offending shard via `handle_sys_exit(u64::MAX)` rather than panicking the supervisor.
 
 ### Page Fault (#PF, vector 14)
 
@@ -86,9 +89,18 @@ The fault handler prints CR2 (faulting address) and the error code. Error code b
 | 4 | Instruction fetch (NX violation) |
 
 Common causes:
-- Shard accessing unmapped memory (only 0x1000 code page and 0x7FF000 stack page are mapped)
-- Writing to a read-only page (code page at 0x1000 is R+X)
-- Executing from a non-executable page (stack at 0x7FF000 is R+W+NX)
+- Shard accessing unmapped memory (only code, mmap'd data, and stack pages are mapped)
+- Writing to a read-only page (code pages at `0x1000+` are R+X)
+- Executing from a non-executable page (stack at `0x7FF000` is R+W+NX, data at `0x100000+` is R+W+NX)
+- **BSS in code region**: C shards compiled as flat binaries have no separate BSS segment. Mutable globals land in the code region (R+X), causing page faults on write. Move all mutable state to stack or mmap'd heap.
+
+### Float Math Corruption After Preemption
+
+If a shard's float computations produce wrong results after being preempted by the timer, check:
+
+- **FXSAVE/FXRSTOR in timer ISR**: The user-mode timer ISR path must save and restore the 512-byte FPU/SSE state around the call to `timer_preempt`.
+- **CR4.OSFXSR**: Bit 9 must be set for FXSAVE/FXRSTOR to work.
+- **Supervisor SSE disabled**: The supervisor must be compiled with `-C target-feature=-sse,-sse2` to prevent Rust-generated SSE instructions from clobbering user XMM registers during syscall handling.
 
 ## Disassembly
 
@@ -121,6 +133,14 @@ rust-objdump -d --no-show-raw-insn \
     target/x86_64-unknown-uefi/release/coconut-boot.efi
 ```
 
+### Shard binaries
+
+C shard flat binaries can be disassembled with:
+
+```bash
+llvm-objdump -d -m x86-64 --no-show-raw-insn shard.bin
+```
+
 ## Memory Layout Quick Reference
 
 ### Physical Memory
@@ -137,10 +157,13 @@ rust-objdump -d --no-show-raw-insn \
 
 | Virtual Address | Maps To | Purpose |
 |----------------|---------|---------|
-| `0x0000000000001000` | Shard code frame | User code (R+X) |
+| `0x0000000000001000+` | Shard code frames | User code (R+X, multi-page) |
+| `0x0000000000100000+` | Shard data frames | mmap'd heap (R+W+NX) |
 | `0x00000000007FF000` | Shard stack frame | User stack (R+W+NX) |
+| `0x0000000000800000+` | GPU BAR frames | GPU VRAM/MMIO (HAL shards, ASLR'd) |
 | `0xFFFF800000000000` + phys | Physical address | HHDM (runtime phys→virt) |
 | `0xFFFFFFFF80200000` | `0x200000` | Supervisor code/data |
+| `0xFFFFFFFFC0000000+` | Device BARs | MMIO mappings (PCD+PWT+NX) |
 
 ### Page Table Indices
 
@@ -148,4 +171,4 @@ rust-objdump -d --no-show-raw-insn \
 |-----------|-------------|---------|
 | 0 | `0x0000000000000000` | Identity map (boot only) / shard user pages |
 | 256 | `0xFFFF800000000000` | Higher-Half Direct Map (HHDM) |
-| 511 | `0xFFFFFFFF80000000` | Kernel text/data/bss/stack |
+| 511 | `0xFFFFFFFF80000000` | Kernel text/data/bss/stack + MMIO |

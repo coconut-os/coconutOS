@@ -183,4 +183,4 @@ See [.claude/ROADMAP.md](.claude/ROADMAP.md) for detailed milestones.
 
 ## License
 
-TBD
+[ISC](LICENSE)

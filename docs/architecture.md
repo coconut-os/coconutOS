@@ -1,8 +1,8 @@
 # coconutOS Architecture
 
-> **Version:** 0.1-draft
-> **Date:** 2026-02-25
-> **Status:** Design phase — pre-implementation
+> **Version:** 3.3
+> **Date:** 2026-02-27
+> **Status:** GPU isolation complete, inference stack in progress
 
 ---
 
@@ -194,23 +194,22 @@ Shards are **not** containers (no shared kernel state), **not** VMs (no hardware
                                  └──────────┘
 ```
 
-**States:**
+**States (implemented):**
 
 | State | Description |
 |-------|-------------|
-| **Created** | Shard descriptor allocated, capabilities assigned, address space not yet populated. |
-| **Booting** | Binary loaded into address space, GPU partition assigned, initial threads created. |
-| **Running** | Executing normally. Threads are schedulable, GPU queues are active. |
-| **Scaling** | GPU partition being resized (more/fewer CUs or VRAM). Transient state. |
-| **Destroyed** | All resources reclaimed. VRAM zeroed. Capability handles revoked. |
+| **Free** | Shard slot unoccupied. |
+| **Ready** | Runnable, waiting for scheduler to select it. |
+| **Running** | Currently executing on the CPU. |
+| **Blocked** | Waiting on IPC channel recv. |
+| **Exited** | Shard called `SYS_EXIT`, awaiting cleanup. |
+| **Destroyed** | All resources reclaimed — frames freed, page tables torn down, capabilities cleared. |
 
-**Lifecycle operations:**
+**Lifecycle operations (implemented):**
 
-- `shard_create(manifest) → ShardId` — Allocate shard from manifest (see [Section 11](#11-userland--programming-model)).
-- `shard_boot(id) → Result<()>` — Load binary, map memory, assign GPU partition, start initial thread.
-- `shard_scale(id, resources) → Result<()>` — Live-resize GPU allocation (CU count, VRAM limit). May pause GPU queues briefly.
-- `shard_destroy(id) → Result<()>` — Terminate all threads, flush GPU queues, zero VRAM, free capabilities.
-- `shard_restart(id) → Result<()>` — Equivalent to destroy + create + boot with the same manifest. Used for hot-restart after faults.
+- `shard::create(code, name, priority)` — Allocate page tables, map code + stack, prepare kernel context.
+- `scheduler::run_loop()` — Pick Ready shards, context-switch, handle exit/block.
+- `shard::destroy(id)` — Free all frames, tear down page tables, clear capabilities, zero memory.
 
 ### 3.3 The Supervisor
 
@@ -227,11 +226,10 @@ The supervisor is the only code running in ring 0 (or EL1 on ARM). It is intenti
 - Timer management
 
 **Non-responsibilities (delegated to shards):**
-- GPU driver logic (HAL shards)
-- Network stack (network shard)
-- Filesystem operations (filesystem shard)
+- GPU compute logic (HAL shards)
+- Network stack (planned — network shard)
 - Inference runtime (inference shards)
-- Logging, metrics, tracing (service shards)
+- Logging, metrics, tracing (planned — service shards)
 
 **Code budget:** The supervisor targets <10,000 lines of Rust (`no_std`, `no_alloc` in critical paths). This is comparable to seL4's ~10K LoC verified kernel. The small size enables:
 - Complete manual audit
@@ -476,70 +474,47 @@ Estimated reduced driver LoC per vendor: ~50K (compute-only) vs. ~500K (full dri
 Every resource in coconutOS is accessed through capabilities — unforgeable tokens that encode both the resource identity and the permitted operations.
 
 ```
-Capability structure (64-bit):
-┌──────────┬──────────┬────────────┬───────────┐
-│ Type (8) │ ID (24)  │ Rights (16)│ Guard (16)│
-│          │          │            │ (HMAC)    │
-└──────────┴──────────┴────────────┴───────────┘
+Per-shard capability table (kernel-side, 16 entries per shard):
+┌──────────┬──────────┬────────────┐
+│ Type (8) │ ID (16)  │ Rights (16)│
+└──────────┴──────────┴────────────┘
 ```
 
-**Capability types:**
+**Capability types (implemented):**
 
-| Type | Resource | Example Rights |
-|------|----------|---------------|
-| `CAP_SHARD` | Shard control | create, destroy, scale, inspect |
-| `CAP_MEMORY` | CPU memory region | read, write, execute, grant |
-| `CAP_VRAM` | GPU memory region | read, write, dma_src, dma_dst |
-| `CAP_GPU` | GPU partition | compute, copy, resize |
-| `CAP_CHANNEL` | IPC channel endpoint | send, receive, grant |
-| `CAP_IRQ` | Interrupt line | listen |
-| `CAP_IO` | I/O port or MMIO region | read, write |
-| `CAP_TIMER` | Timer | set, cancel |
+| Type | Value | Resource | Example Rights |
+|------|-------|----------|---------------|
+| `CAP_CHANNEL` | 1 | IPC channel endpoint | send, receive, grant |
+| `CAP_SHARD` | 2 | Shard management | (reserved) |
+| `CAP_MEMORY` | 3 | Memory region | (reserved) |
+| `CAP_GPU_DMA` | 4 | GPU DMA access | write |
+
+**Planned types (not yet implemented):** `CAP_VRAM`, `CAP_GPU`, `CAP_IRQ`, `CAP_IO`, `CAP_TIMER`.
 
 Capabilities can be:
-- **Delegated:** A shard can pass a capability (or a restricted version) to another shard via IPC.
-- **Restricted:** Rights can be removed but never added (monotonic restriction).
-- **Revoked:** The supervisor can revoke any capability, immediately invalidating it in all shards that hold copies.
+- **Granted:** A shard can pass a capability (or a restricted version) to another shard via `SYS_CAP_GRANT` (requires `RIGHT_CHANNEL_GRANT`).
+- **Restricted:** Rights can be removed but never added (monotonic AND via `SYS_CAP_RESTRICT`).
+- **Revoked:** A shard can revoke its own capabilities via `SYS_CAP_REVOKE` (non-cascading).
+- **Inspected:** `SYS_CAP_INSPECT` returns packed `(cap_type << 48 | resource_id << 16 | rights)`.
 
 ### 5.2 pledge_gpu and unveil_vram
 
 Inspired by OpenBSD's `pledge(2)` and `unveil(2)`:
 
-```rust
-/// Restrict the calling shard to only the listed GPU operations.
-/// Cannot be expanded after calling — monotonic restriction only.
-fn pledge_gpu(promises: &[GpuPledge]) -> Result<(), SecurityError>;
+**Implemented as syscalls:**
 
-/// Reveal the listed VRAM regions to the calling shard.
-/// Regions not unveiled are invisible and inaccessible.
-/// Cannot be expanded after calling.
-fn unveil_vram(regions: &[VramRegion]) -> Result<(), SecurityError>;
-```
+- `SYS_GPU_PLEDGE(41)` — `a0` is a bitmask of allowed syscall categories. Monotonic: can only remove bits, never add. Bits: `PLEDGE_SERIAL(1)`, `PLEDGE_CHANNEL(2)`, `PLEDGE_GPU_DMA(4)`.
+- `SYS_GPU_UNVEIL(42)` — `a0=offset`, `a1=size`. One-shot: locks a VRAM range for DMA. Only the unveiled range can be used as a DMA source. Cannot be called again after the first call.
 
-**`GpuPledge` values:**
+**Example: locked-down GPU HAL shard**
 
-| Pledge | Permits |
-|--------|---------|
-| `compute` | Shader dispatch |
-| `copy` | DMA copy (within own partition) |
-| `peer_copy` | DMA copy to/from another shard's partition (requires both shards to pledge) |
-| `alloc` | VRAM allocation within quota |
-| `shader_load` | Loading new compute shaders |
-| `resize` | Dynamic GPU partition resizing |
+After initialization, the HAL shard restricts itself:
+1. `pledge_gpu(PLEDGE_SERIAL | PLEDGE_CHANNEL | PLEDGE_GPU_DMA)` — only serial, IPC, and DMA allowed
+2. `unveil_vram(offset, size)` — only a specific VRAM region can be used for DMA
 
-**Example: locked-down inference shard**
+From this point, any attempt to invoke other syscalls or DMA outside the unveiled region is rejected.
 
-```rust
-// After initialization, restrict to inference-only operations
-pledge_gpu(&[GpuPledge::Compute, GpuPledge::Copy])?;
-unveil_vram(&[
-    VramRegion { base: weights_base, size: weights_size, perm: Permission::Read },
-    VramRegion { base: activations_base, size: activations_size, perm: Permission::ReadWrite },
-    VramRegion { base: kv_cache_base, size: kv_cache_size, perm: Permission::ReadWrite },
-])?;
-// From this point: no new allocations, no shader loads, no partition resize,
-// no access to VRAM outside the three unveiled regions.
-```
+**Future expansion:** The design supports richer pledge categories (compute, alloc, shader_load) and multi-region unveil, to be added as the inference stack matures.
 
 ### 5.3 W^X for GPU Memory
 
@@ -581,18 +556,21 @@ The IOMMU (AMD-Vi / Intel VT-d / ARM SMMU) is the hardware root of GPU isolation
 
 ### 5.6 Side-Channel Mitigations
 
-| Attack Vector | Mitigation |
-|--------------|------------|
-| GPU cache timing | Partition-level cache flushing on context switch; separate L2 partitions where hardware supports it |
-| VRAM access patterns | Constant-time memory access primitives for sensitive operations (key material) |
-| Power analysis | Power management telemetry restricted to supervisor; per-shard power budgets |
-| PCIe bus snooping | Out of scope (physical access); mitigated by IOMMU for software DMA attacks |
-| Speculative execution (CPU) | Standard Spectre/Meltdown mitigations in supervisor |
-| GPU shared resources | Hardware-enforced CU partitioning (AMD MIG-equivalent) preferred; software partitioning with flush as fallback |
+| Attack Vector | Mitigation | Status |
+|--------------|------------|--------|
+| FPU/SSE register leakage | `fninit` + zero all XMM0-15 + reset MXCSR on every context switch | Implemented |
+| Debug register persistence | Clear DR0-DR3, reset DR7 on every context switch | Implemented |
+| Branch predictor cross-shard inference | IBPB (wrmsr 0x49) on every context switch when CPU supports it | Implemented |
+| User-mode timing attacks | CR4.TSD set — `rdtsc`/`rdtscp` causes #GP in ring 3 | Implemented |
+| FXSAVE/FXRSTOR state leakage | Timer ISR saves/restores per-shard SSE state; side-channel clear still runs between shards | Implemented |
+| GPU cache timing | Partition-level cache flushing on context switch | Planned |
+| VRAM access patterns | Constant-time memory access primitives for sensitive operations | Planned |
+| Speculative execution (CPU) | IBPB implemented; additional Spectre mitigations planned | Partial |
+| PCIe bus snooping | Out of scope (physical access); mitigated by IOMMU for software DMA attacks | N/A |
 
-### 5.7 Audit System
+### 5.7 Audit System (Planned)
 
-All security-relevant events are logged to a tamper-evident audit log:
+All security-relevant events will be logged to a tamper-evident audit log:
 
 - Shard creation/destruction
 - Capability grants, delegations, and revocations
@@ -607,67 +585,61 @@ The audit log is written to a dedicated audit shard that has no GPU access and n
 
 ## 6. Boot Process
 
-### 6.1 Boot Sequence
+### 6.1 Boot Sequence (Implemented)
 
 ```
 Power On
    │
    ▼
 ┌─────────┐
-│  UEFI   │  Platform firmware, Secure Boot chain
+│  UEFI   │  Platform firmware
 └────┬────┘
      │
      ▼
 ┌──────────────┐
 │  Bootloader  │  coconut-boot (Rust, UEFI application)
-│              │  - Parse boot config (TOML)
-│              │  - Load supervisor binary
-│              │  - Set up initial page tables
-│              │  - Configure IOMMU (identity-map initially)
-│              │  - Jump to supervisor entry point
+│              │  - Load supervisor ELF from boot FS
+│              │  - Parse PT_LOAD segments → 0x200000
+│              │  - Build BootInfo + memory map
+│              │  - Find ACPI RSDP via UEFI config table
+│              │  - Exit boot services
+│              │  - Jump to supervisor (RDI = BootInfo*)
 └──────┬───────┘
        │
        ▼
 ┌──────────────────────────────┐
-│  Supervisor Init             │
-│  - Initialize memory regions │
-│  - Set up capability table   │
-│  - Configure IOMMU domains   │
-│  - Initialize scheduler      │
-│  - Initialize IPC subsystem  │
+│  Boot Trampoline (_start)    │
+│  - Set temp stack at 0x300000│
+│  - Zero BSS, init serial     │
+│  - Build 3-region page tables│
+│  - Enable NXE, switch CR3    │
+│  - Jump to supervisor_main   │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│  GPU Discovery & Partition   │
-│  - Enumerate PCIe devices    │
-│  - Identify GPUs             │
-│  - Create IOMMU domains      │
-│  - Assign GPU regions        │
-│  - Boot GPU HAL shards       │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Core Service Shards         │
-│  - Boot filesystem shard     │
-│  - Boot network shard        │
-│  - Boot audit/logging shard  │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Userland Init               │
-│  - Read shard manifests      │
-│  - Boot inference shards     │
-│  - Announce inference ready  │
+│  supervisor_main             │
+│  - PMM, frame alloc, GDT,   │
+│    TSS, IDT, PIC, PIT       │
+│  - CR4.OSFXSR + CR4.TSD     │
+│  - Detect IBPB, init ACPI   │
+│  - PCI enum, IOMMU, GPU     │
+│  - Init filesystem (ext2)   │
+│  - Remove identity mapping   │
+│  - Create shards:            │
+│    GPU HAL ×2, fs-reader,   │
+│    hello-c, llama-inference  │
+│  - Enable interrupts         │
+│  - Enter scheduler run loop  │
 └──────────────────────────────┘
 ```
 
-### 6.2 Boot Configuration
+### 6.2 Boot Configuration (Planned)
+
+Currently, shards are statically embedded in the supervisor binary via `include_bytes!` and created in `supervisor_main`. A future boot configuration system will support dynamic shard manifests:
 
 ```toml
-# /boot/coconut.toml
+# /boot/coconut.toml (planned)
 
 [supervisor]
 binary = "/boot/supervisor.elf"
@@ -713,7 +685,7 @@ manifest = "/etc/shards/whisper.toml"
 autostart = false
 ```
 
-### 6.3 Shard Hot-Restart
+### 6.3 Shard Hot-Restart (Planned)
 
 Shards can be restarted without rebooting the supervisor:
 
@@ -757,11 +729,13 @@ The supervisor uses a simple, auditable scheduling algorithm:
   1. **Critical:** Supervisor-internal tasks, IOMMU management
   2. **High:** GPU HAL shards, interrupt-driven I/O
   3. **Normal:** Inference shards, application shards
-  4. **Low:** Background maintenance, audit log compression
+  4. **Low:** Background maintenance
 
-- **Time slice:** 1ms per shard at Normal priority, 500µs at High
-- **Preemption:** The supervisor preempts shards at time-slice boundaries. Intra-shard preemption is cooperative.
-- **CPU affinity:** Shards can be pinned to specific CPU cores via manifest configuration.
+- **Time slice:** ~1ms (PIT at ~1 kHz, divisor 1193)
+- **Preemption:** PIT timer ISR (vector 32) fires ~1 kHz. User-mode path: save GP regs + FXSAVE → `timer_preempt` (tick++, EOI, mark Ready, yield) → FXRSTOR + restore → iretq. Kernel-mode interrupts: EOI + iretq only (no preemption of syscall handlers).
+- **Context switch:** Naked asm function — push/pop callee-saved registers (RBX, RBP, R12-R15), swap RSP.
+- **Side-channel clearing:** `clear_sensitive_cpu_state()` zeroes FPU/SSE/debug state and issues IBPB before every shard switch.
+- **MAX_SHARDS:** 8, each with a 4 KiB kernel stack.
 
 ### 7.3 Level 2: Intra-Shard CPU Scheduling
 
@@ -854,25 +828,31 @@ The supervisor allocates physical memory in **2 MiB regions** to minimize page t
 Each shard has its own virtual address space, configured by the supervisor:
 
 ```
-Shard Virtual Address Space:
-┌───────────────────────┐ 0xFFFF_FFFF_FFFF
-│ (unmapped guard page) │
+Shard Virtual Address Space (implemented):
+┌───────────────────────┐ 0x3F00_0000
+│                       │ (unmapped)
 ├───────────────────────┤
-│ Stack (per-thread)    │ Guard pages between stacks
+│ GPU BARs (ASLR'd)    │ VRAM + MMIO (HAL shards only)
+├───────────────────────┤ 0x0080_0000+
+│                       │ (unmapped)
 ├───────────────────────┤
-│ Heap                  │ Growing upward, shard-managed
+│ Stack (4 KiB)        │ R+W+NX
+├───────────────────────┤ 0x007F_F000
+│                       │ (unmapped)
 ├───────────────────────┤
-│ GPU MMIO window       │ Device registers (HAL shards only)
+│ Data (mmap'd heap)   │ R+W+NX (via SYS_MMAP)
+├───────────────────────┤ 0x0010_0000+
+│                       │ (unmapped)
 ├───────────────────────┤
-│ Shared memory regions │ IPC shared memory (if granted)
+│ Config page           │ R (HAL shards only, VA 0x4000)
 ├───────────────────────┤
-│ Code (read + execute) │ W^X enforced
-├───────────────────────┤
-│ (unmapped guard page) │
-└───────────────────────┘ 0x0000_0000_0000
+│ Code (multi-page)    │ R+X (W^X enforced)
+├───────────────────────┤ 0x0000_1000
+│ (unmapped null guard) │
+└───────────────────────┘ 0x0000_0000
 ```
 
-ASLR randomizes the base address of each region (minimum 28 bits of entropy on 64-bit platforms).
+GPU ASLR randomizes VRAM and MMIO BAR virtual addresses within [0x800000, 0x3F000000) per shard.
 
 ### 8.3 GPU Memory Management
 
@@ -966,38 +946,16 @@ These are implemented entirely in the shard runtime library — no syscalls requ
 
 Communication between shards requires supervisor mediation:
 
-#### 9.3.1 Channels
+#### 9.3.1 Channels (Implemented)
 
-```rust
-/// Create a bidirectional channel between two shards.
-/// Returns capability handles for each endpoint.
-fn channel_create() -> Result<(ChannelEnd, ChannelEnd), IpcError>;
+**Syscalls:** `SYS_CHANNEL_SEND(21)`, `SYS_CHANNEL_RECV(22)`.
 
-/// Send a message on a channel.
-/// Small messages (<256 bytes) are copied into the channel buffer.
-/// Large messages use a shared memory region (zero-copy).
-fn channel_send(
-    endpoint: &ChannelEnd,
-    msg: &IpcMessage,
-) -> Result<(), IpcError>;
-
-/// Receive a message from a channel (blocking).
-fn channel_recv(
-    endpoint: &ChannelEnd,
-) -> Result<IpcMessage, IpcError>;
-
-/// Receive a message from a channel (non-blocking).
-fn channel_try_recv(
-    endpoint: &ChannelEnd,
-) -> Result<Option<IpcMessage>, IpcError>;
-```
-
-**Channel implementation:**
-1. Sender invokes `channel_send` syscall.
-2. Supervisor validates the sender holds a `CAP_CHANNEL` with `send` rights.
-3. For small messages: supervisor copies message into the receiver's channel buffer.
-4. For large messages: supervisor maps a shared memory region into both shards' address spaces.
-5. Receiver is woken if blocked on `channel_recv`.
+**Implementation:**
+- Single-buffered per direction, 256-byte max message size
+- Blocking receive: shard state set to `Blocked`, scheduler yields
+- Capability-gated: sender must hold `CAP_CHANNEL` with `RIGHT_CHANNEL_SEND`, receiver must hold `RIGHT_CHANNEL_RECV`
+- Supervisor copies message between kernel-side buffers (no direct shard-to-shard memory access)
+- Receiver is woken (state set to `Ready`) when a message arrives
 
 #### 9.3.2 Shared Memory Fast Path
 
@@ -1086,7 +1044,9 @@ The supervisor validates and transfers the capability during message dispatch. T
 
 ---
 
-## 10. Networking
+## 10. Networking (Planned)
+
+> **Not yet implemented.** This section describes the planned network architecture.
 
 ### 10.1 Architecture
 
@@ -1144,9 +1104,9 @@ Both RDMA and GPU-Direct are opt-in, require explicit capabilities, and are medi
 
 ## 11. Userland & Programming Model
 
-### 11.1 Shard Deployment Manifest
+### 11.1 Shard Deployment Manifest (Planned)
 
-Every shard is deployed with a TOML manifest:
+Currently, shards are statically compiled into the supervisor. A future manifest system will support dynamic deployment:
 
 ```toml
 # /etc/shards/llama-70b.toml
@@ -1184,7 +1144,13 @@ next_shard = "llama-70b-stage1"
 
 ### 11.2 Inference Runtime API
 
-The coconutOS inference runtime provides a Rust API for building inference shards:
+coconutOS provides two runtime APIs for building shards:
+
+**Rust API (`coconut-rt`):** Provides `#![no_std]` entry point, syscall wrappers, serial I/O macros, and GPU primitives (VramAllocator, CommandRing, matmul_4x4). Used by the GPU HAL shard (`coconut-shard-gpu`).
+
+**C API (`coconut.h`):** Header-only syscall wrappers for freestanding C code. Used by hello-c and the llama-inference shard.
+
+The following shows the planned high-level inference API (not yet implemented):
 
 ```rust
 use coconut_runtime::{Shard, InferenceEngine, GpuContext};
@@ -1216,73 +1182,72 @@ fn main() -> Result<(), coconut_runtime::Error> {
 }
 ```
 
-### 11.3 C ABI and FFI
+### 11.3 C ABI and FFI (Implemented)
 
-For porting existing inference frameworks (llama.cpp, vLLM, etc.), coconutOS provides a C ABI:
+coconutOS provides `include/coconut.h` — a header-only C interface with inline asm syscall wrappers:
 
 ```c
-// coconut.h — C FFI for inference shard development
+// coconut.h — header-only, no libc dependency
 
-typedef struct coconut_shard* coconut_shard_t;
-typedef struct coconut_gpu* coconut_gpu_t;
-typedef struct coconut_alloc* coconut_alloc_t;
+// Core
+void coconut_exit(uint64_t code);
+uint64_t coconut_serial_write(const char *buf, uint64_t len);
+uint64_t coconut_yield(void);
+uint64_t coconut_mmap(uint64_t va_start, uint64_t num_pages);
 
-// Shard lifecycle
-coconut_shard_t coconut_shard_init(void);
-void coconut_shard_shutdown(coconut_shard_t shard);
-
-// GPU memory
-coconut_alloc_t coconut_gpu_alloc(
-    coconut_gpu_t gpu, size_t size, int usage, int flags);
-void coconut_gpu_free(coconut_gpu_t gpu, coconut_alloc_t alloc);
-void* coconut_gpu_map(coconut_gpu_t gpu, coconut_alloc_t alloc);
-
-// Compute dispatch
-int coconut_gpu_dispatch(
-    coconut_gpu_t gpu,
-    const void* shader_binary, size_t shader_size,
-    const void* args, size_t args_size);
-int coconut_gpu_wait(coconut_gpu_t gpu, int fence_id, int timeout_ms);
+// Filesystem
+uint64_t coconut_fs_open(const char *path, uint64_t path_len);
+uint64_t coconut_fs_read(uint64_t fd, void *buf, uint64_t max_len);
+uint64_t coconut_fs_stat(uint64_t fd);
+uint64_t coconut_fs_close(uint64_t fd);
 
 // IPC
-int coconut_ipc_recv(coconut_shard_t shard, void* buf, size_t* len);
-int coconut_ipc_send(coconut_shard_t shard, int dest, const void* buf, size_t len);
+uint64_t coconut_channel_send(uint64_t ch, const void *buf, uint64_t len);
+uint64_t coconut_channel_recv(uint64_t ch, void *buf, uint64_t max_len);
+
+// Capabilities, GPU pledge/unveil, GPU DMA — also available
 ```
 
-### 11.4 Debugging and Profiling Tools
+C shards are compiled with clang (freestanding x86-64), linked as flat binaries via `targets/shard.ld`, and embedded into the supervisor.
 
-| Tool | Purpose |
-|------|---------|
-| `coconut-trace` | System-wide tracing of IPC messages, syscalls, GPU dispatches. Output in Chrome Trace Format for visualization. |
-| `coconut-prof` | Per-shard GPU profiling: kernel execution time, memory bandwidth, CU utilization. |
-| `coconut-audit` | Query the audit log. Filter by shard, capability type, time range. |
-| `coconut-top` | Real-time dashboard showing shard CPU/GPU utilization, memory usage, IPC throughput. |
-| `coconut-shard` | CLI tool for shard management: create, start, stop, restart, inspect, logs. |
+### 11.4 Debugging and Profiling Tools (Planned)
+
+| Tool | Purpose | Status |
+|------|---------|--------|
+| `coconut-trace` | System-wide tracing of IPC messages, syscalls, GPU dispatches | Planned (milestone 3.5) |
+| `coconut-prof` | Per-shard GPU profiling: kernel execution time, memory bandwidth, CU utilization | Planned (milestone 3.5) |
+| `coconut-audit` | Query the audit log. Filter by shard, capability type, time range | Planned |
+| `coconut-top` | Real-time dashboard showing shard CPU/GPU utilization, memory usage, IPC throughput | Planned |
+| `coconut-shard` | CLI tool for shard management: create, start, stop, restart, inspect, logs | Planned |
+
+Currently, all debugging is done via serial output (`-serial stdio` in QEMU) and GDB remote debugging. See [debugging.md](debugging.md).
 
 ---
 
 ## 12. Filesystem & Storage
 
-### 12.1 Minimal Crash-Consistent Filesystem
+### 12.1 Current Implementation: ext2 Ramdisk
 
-coconutOS includes a minimal filesystem (coconutFS) designed for the inference use case:
+coconutOS currently uses a minimal read-only ext2 filesystem backed by a 128 KiB ramdisk generated at compile time.
+
+**Implementation:**
+- ext2 revision 0, 1024-byte blocks
+- Supports direct block pointers and single indirect blocks (files up to 268 KiB)
+- Generated by `build.rs` — no external tools required
+- Contains `hello.txt` (22 bytes) and `model.bin` (~87 KiB, deterministic transformer weights)
+- Global open file table (`MAX_OPEN_FILES = 16`), per-shard fd ownership
+
+**Syscalls:** `SYS_FS_OPEN`, `SYS_FS_READ`, `SYS_FS_STAT`, `SYS_FS_CLOSE`.
+
+### 12.2 Future: Crash-Consistent Filesystem (coconutFS)
+
+A more capable filesystem is planned for production use:
 
 **Design goals:**
 - Crash-consistent (no fsck required after unclean shutdown)
 - Read-optimized (model weights are read-heavy, write-rare)
 - Large-file friendly (model files are 10-200+ GiB)
 - Zero-copy model loading support
-
-**Non-goals:**
-- POSIX compliance (no hard links, no ACLs, no xattrs beyond security labels)
-- Small-file optimization (no inlining, no tail packing)
-- Network filesystem support
-
-**Implementation:**
-- Log-structured with copy-on-write for metadata
-- Extent-based allocation for large contiguous files
-- Superblock + checkpoint regions for crash recovery
-- Runs entirely in the filesystem shard (user-mode)
 
 ### 12.2 Zero-Copy Model Loading
 
@@ -1307,70 +1272,70 @@ For shard hot-restart, VRAM weight regions can be preserved across restarts (the
 
 ## 13. Development Roadmap
 
-### Phase 0: CPU-Only Shard Model (Months 1-6)
+### Phase 0: CPU-Only Shard Model — Complete
 
 **Goal:** Functional microkernel with CPU-only shards, no GPU support.
 
-| Milestone | Deliverable |
-|-----------|------------|
-| 0.1 | Supervisor boots on x86-64 (QEMU), initializes memory, prints to serial |
-| 0.2 | Shard creation and destruction (single-threaded, no GPU) |
-| 0.3 | IPC channels between shards (synchronous message passing) |
-| 0.4 | Basic CPU scheduler (round-robin, preemption) |
-| 0.5 | Capability system (create, check, delegate, revoke) |
-| 0.6 | Minimal filesystem shard (read-only, ext2-compatible for bootstrapping) |
+| Milestone | Deliverable | Status |
+|-----------|------------|--------|
+| 0.1 | Supervisor boots on x86-64 (QEMU), initializes memory, prints to serial | Done |
+| 0.2 | Shard creation and destruction (single-threaded, no GPU) | Done |
+| 0.3 | IPC channels between shards (synchronous message passing) | Done |
+| 0.4 | Basic CPU scheduler (round-robin, preemption) | Done |
+| 0.5 | Capability system (create, check, delegate, revoke) | Done |
+| 0.6 | Minimal filesystem shard (read-only, ext2-compatible for bootstrapping) | Done |
 
-### Phase 1: GPU Bring-Up — AMD (Months 7-12)
+### Phase 1: GPU Bring-Up — Complete
 
 **Goal:** GPU HAL shard for AMD RDNA3/CDNA3, basic compute dispatch.
 
-| Milestone | Deliverable |
-|-----------|------------|
-| 1.1 | GPU PCIe enumeration and IOMMU domain setup |
-| 1.2 | AMD GPU HAL shard: device init, memory alloc, command queue |
-| 1.3 | Basic compute shader dispatch (matrix multiply kernel) |
-| 1.4 | GPU memory management with typed allocations |
-| 1.5 | VRAM zeroing on free, W^X enforcement |
-| 1.6 | Performance baseline: compare GPU compute throughput vs. Linux/ROCm |
+| Milestone | Deliverable | Status |
+|-----------|------------|--------|
+| 1.1 | GPU PCIe enumeration and IOMMU domain setup | Done |
+| 1.2 | GPU HAL shard: device init, memory alloc, command queue | Done |
+| 1.3 | Basic compute dispatch (4×4 matrix multiply via command ring) | Done |
+| 1.4 | GPU memory management with typed allocations | Done |
+| 1.5 | VRAM zeroing on free, W^X enforcement | Done |
+| 1.6 | Performance baseline: compute throughput measurement | Done |
 
-### Phase 2: Multi-Shard Isolation (Months 13-18)
+### Phase 2: Multi-Shard Isolation — Complete
 
 **Goal:** Multiple inference shards with strong isolation on a single GPU.
 
-| Milestone | Deliverable |
-|-----------|------------|
-| 2.1 | GPU partitioning (CU slicing, VRAM carving) |
-| 2.2 | Multiple GPU HAL shard instances (one per partition) |
-| 2.3 | Inter-shard GPU DMA (pipeline parallelism) |
-| 2.4 | `pledge_gpu` / `unveil_vram` enforcement |
-| 2.5 | GPU ASLR |
-| 2.6 | Side-channel isolation testing and hardening |
+| Milestone | Deliverable | Status |
+|-----------|------------|--------|
+| 2.1 | GPU partitioning (CU slicing, VRAM carving) | Done |
+| 2.2 | Multiple GPU HAL shard instances (one per partition) | Done |
+| 2.3 | Inter-shard GPU DMA (pipeline parallelism) | Done |
+| 2.4 | `pledge_gpu` / `unveil_vram` enforcement | Done |
+| 2.5 | GPU ASLR | Done |
+| 2.6 | Side-channel isolation testing and hardening | Done |
 
-### Phase 3: Inference Stack (Months 19-24)
+### Phase 3: Inference Stack — In Progress
 
 **Goal:** End-to-end LLM inference on coconutOS.
 
-| Milestone | Deliverable |
-|-----------|------------|
-| 3.1 | Inference runtime library (Rust API) |
-| 3.2 | C ABI / FFI layer |
-| 3.3 | Port llama.cpp as proof-of-concept inference shard |
-| 3.4 | Inference pipeline protocol (multi-shard pipeline parallelism) |
-| 3.5 | coconut-trace, coconut-prof tooling |
-| 3.6 | Benchmark: Llama 70B inference latency vs. Linux/ROCm baseline |
+| Milestone | Deliverable | Status |
+|-----------|------------|--------|
+| 3.1 | Inference runtime library (Rust API) | Done |
+| 3.2 | C ABI / FFI layer | Done |
+| 3.3 | Port llama2.c as proof-of-concept inference shard | Done |
+| 3.4 | Inference pipeline protocol (multi-shard pipeline parallelism) | Planned |
+| 3.5 | coconut-trace, coconut-prof tooling | Planned |
+| 3.6 | Benchmark: Llama 70B inference latency vs. Linux/ROCm baseline | Planned |
 
-### Phase 4: Hardening & Multi-Vendor (Months 25-30)
+### Phase 4: Hardening & Multi-Vendor — Planned
 
 **Goal:** Production hardening, additional GPU vendor support.
 
-| Milestone | Deliverable |
-|-----------|------------|
-| 4.1 | Security audit of supervisor (external) |
-| 4.2 | Fuzzing campaign (syzkaller-style for supervisor syscalls) |
-| 4.3 | NVIDIA GPU HAL shard (Hopper/Blackwell) |
-| 4.4 | Apple GPU HAL shard (M-series, ARM64 port) |
-| 4.5 | Network shard with RDMA/GPU-Direct support |
-| 4.6 | Formal verification of supervisor capability system (Verus or similar) |
+| Milestone | Deliverable | Status |
+|-----------|------------|--------|
+| 4.1 | Security audit of supervisor (external) | Planned |
+| 4.2 | Fuzzing campaign (syzkaller-style for supervisor syscalls) | Planned |
+| 4.3 | NVIDIA GPU HAL shard (Hopper/Blackwell) | Planned |
+| 4.4 | Apple GPU HAL shard (M-series, ARM64 port) | Planned |
+| 4.5 | Network shard with RDMA/GPU-Direct support | Planned |
+| 4.6 | Formal verification of supervisor capability system (Verus or similar) | Planned |
 
 ---
 
@@ -1422,39 +1387,30 @@ For shard hot-restart, VRAM weight regions can be preserved across restarts (the
 
 ## 15. Appendices
 
-### Appendix A: Supervisor Syscall Table
+### Appendix A: Supervisor Syscall Table (Implemented)
 
-| # | Syscall | Arguments | Description |
-|---|---------|-----------|-------------|
-| 0 | `shard_create` | `manifest: *const ShardManifest` | Create a new shard |
-| 1 | `shard_boot` | `id: ShardId` | Boot a created shard |
-| 2 | `shard_destroy` | `id: ShardId` | Destroy a shard |
-| 3 | `shard_scale` | `id: ShardId, resources: *const ResourceDesc` | Resize shard resources |
-| 4 | `shard_info` | `id: ShardId, buf: *mut ShardInfo` | Query shard status |
-| 10 | `cap_create` | `type: CapType, rights: u16` | Create a capability |
-| 11 | `cap_grant` | `cap: CapId, target: ShardId` | Grant capability to shard |
-| 12 | `cap_revoke` | `cap: CapId` | Revoke a capability |
-| 13 | `cap_restrict` | `cap: CapId, new_rights: u16` | Reduce capability rights |
-| 20 | `channel_create` | `(none)` | Create IPC channel pair |
-| 21 | `channel_send` | `ep: ChannelEnd, msg: *const IpcMessage` | Send on channel |
-| 22 | `channel_recv` | `ep: ChannelEnd, msg: *mut IpcMessage` | Receive from channel (blocking) |
-| 23 | `channel_try_recv` | `ep: ChannelEnd, msg: *mut IpcMessage` | Receive (non-blocking) |
-| 30 | `mem_alloc` | `size: usize, type: RegionType` | Allocate physical memory region |
-| 31 | `mem_free` | `region: RegionId` | Free physical memory region |
-| 32 | `mem_map` | `region: RegionId, vaddr: usize` | Map region into address space |
-| 33 | `mem_share` | `region: RegionId, target: ShardId, rights: u16` | Share region with shard |
-| 40 | `gpu_alloc` | `desc: *const GpuAllocDesc` | Allocate GPU memory |
-| 41 | `gpu_free` | `alloc: GpuAllocation` | Free GPU memory |
-| 42 | `gpu_submit` | `queue: QueueId, cmds: *const GpuCommand, count: usize` | Submit GPU commands |
-| 43 | `gpu_wait` | `fence: FenceId, timeout_ns: u64` | Wait for GPU fence |
-| 44 | `gpu_peer_dma` | `src: GpuAllocation, dst_shard: ShardId, dst: GpuAllocation, size: usize` | Peer DMA |
-| 50 | `pledge_gpu` | `promises: *const GpuPledge, count: usize` | Restrict GPU operations |
-| 51 | `unveil_vram` | `regions: *const VramRegion, count: usize` | Restrict VRAM visibility |
-| 60 | `timer_set` | `duration_ns: u64` | Set a one-shot timer |
-| 61 | `timer_cancel` | `timer: TimerId` | Cancel a timer |
-| 62 | `yield_now` | `(none)` | Yield CPU time slice |
-| 63 | `thread_create` | `entry: fn(), stack: *mut u8` | Create thread in current shard |
-| 64 | `thread_exit` | `code: i32` | Exit current thread |
+| # | Name | Arguments | Description |
+|---|------|-----------|-------------|
+| 0 | `SYS_EXIT` | `a0`: exit code | Terminate shard |
+| 1 | `SYS_SERIAL_WRITE` | `a0`: buffer ptr, `a1`: length | Write to serial console |
+| 11 | `SYS_CAP_GRANT` | `a0`: handle, `a1`: target shard, `a2`: new rights | Grant capability copy |
+| 12 | `SYS_CAP_REVOKE` | `a0`: handle | Revoke a capability |
+| 13 | `SYS_CAP_RESTRICT` | `a0`: handle, `a1`: new rights | Restrict rights (monotonic AND) |
+| 14 | `SYS_CAP_INSPECT` | `a0`: handle | Inspect capability |
+| 21 | `SYS_CHANNEL_SEND` | `a0`: channel ID, `a1`: buffer ptr, `a2`: length | Send IPC message |
+| 22 | `SYS_CHANNEL_RECV` | `a0`: channel ID, `a1`: buffer ptr, `a2`: max length | Receive IPC message (blocking) |
+| 30 | `SYS_FS_OPEN` | `a0`: path ptr, `a1`: path length | Open file by path |
+| 31 | `SYS_FS_READ` | `a0`: fd, `a1`: buffer ptr, `a2`: max length | Read from open file |
+| 32 | `SYS_FS_STAT` | `a0`: fd | Get file size |
+| 33 | `SYS_FS_CLOSE` | `a0`: fd | Close open file |
+| 40 | `SYS_GPU_DMA` | `a0`: target partition, `a1`: src offset, `a2`: packed(dst<<32\|len) | Inter-partition VRAM copy |
+| 41 | `SYS_GPU_PLEDGE` | `a0`: bitmask of allowed categories | Monotonic syscall restriction |
+| 42 | `SYS_GPU_UNVEIL` | `a0`: offset, `a1`: size | Lock VRAM range for DMA |
+| 43 | `SYS_MMAP` | `a0`: va_start (page-aligned), `a1`: num_pages | Map data pages into shard |
+| 62 | `SYS_YIELD` | — | Yield CPU time slice |
+
+Entry: `syscall` instruction → `syscall_entry` (naked stub) → dispatch by RAX.
+SFMASK clears IF on entry — no timer interrupts during syscall handling.
 
 ### Appendix B: Hardware Requirements
 
@@ -1492,7 +1448,7 @@ For shard hot-restart, VRAM weight regions can be preserved across restarts (the
 | GPU ASLR | No | No | N/A | N/A | N/A | **Yes** |
 | GPU memory zeroing | No | No | N/A | N/A | N/A | **Yes** |
 | Rust kernel | No | No | No | Partial | No | **Yes** |
-| Formal verification | No | No | No | No | Yes | **Planned** |
+| Formal verification | No | No | No | No | Yes | **Planned (milestone 4.6)** |
 | TCB size | ~28M LoC | ~10M LoC | ~1M LoC | ~200K LoC | ~10K LoC | **<10K LoC** |
 
 ### Appendix D: Glossary

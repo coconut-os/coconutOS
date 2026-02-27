@@ -8,8 +8,9 @@ UEFI bootloader for coconutOS. Loads the supervisor ELF from the boot filesystem
 2. **Load supervisor** — Opens `\EFI\coconut\supervisor.elf` from the boot filesystem
 3. **Parse ELF** — Extracts `PT_LOAD` segments, copies them to physical address `0x200000`
 4. **Build BootInfo** — Allocates 2 pages for the `BootInfo` struct and memory map array, translates the UEFI memory map into `MemoryRegionDescriptor` entries
-5. **Exit Boot Services** — No more UEFI runtime calls after this point
-6. **Jump to supervisor** — Inline assembly sets RDI to the `BootInfo` pointer and jumps to the supervisor entry point
+5. **Find ACPI RSDP** — Reads the UEFI configuration table for the ACPI 2.0 RSDP address
+6. **Exit Boot Services** — No more UEFI runtime calls after this point
+7. **Jump to supervisor** — Inline assembly sets RDI to the `BootInfo` pointer and jumps to the supervisor entry point
 
 ## ABI Bridge
 
@@ -19,7 +20,7 @@ UEFI uses the **Microsoft x64** calling convention (first argument in RCX), whil
 
 | File | Purpose |
 |------|---------|
-| `src/main.rs` | UEFI entry point, ELF loading, memory map construction, supervisor handoff |
+| `src/main.rs` | UEFI entry point, ELF loading, memory map construction, ACPI RSDP discovery, supervisor handoff |
 | `src/elf.rs` | Minimal ELF64 parser — `Elf64Header`, `Elf64Phdr`, `PT_LOAD` segment extraction |
 
 ## Dependencies

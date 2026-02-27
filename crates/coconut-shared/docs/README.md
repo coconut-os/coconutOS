@@ -14,11 +14,12 @@ Passed from bootloader to supervisor in RDI at handoff:
 #[repr(C)]
 pub struct BootInfo {
     pub magic: u64,               // BOOT_INFO_MAGIC (0x544E5543, "CNUT")
-    pub version: u32,             // Protocol version (currently 1)
+    pub version: u32,             // Protocol version (currently 2)
     pub memory_map_count: u32,    // Number of memory region descriptors
     pub memory_map_addr: u64,     // Physical address of descriptor array
     pub supervisor_phys_base: u64, // 0x200000
     pub supervisor_size: u64,     // Size of loaded supervisor in bytes
+    pub acpi_rsdp_addr: u64,     // Physical address of ACPI RSDP (0 if not found)
 }
 ```
 
@@ -62,7 +63,21 @@ The bootloader translates the UEFI memory map into this format before exiting bo
 | `SYS_FS_READ` | 31 | Read from open file, returns bytes read |
 | `SYS_FS_STAT` | 32 | Get file size |
 | `SYS_FS_CLOSE` | 33 | Close open file |
+| `SYS_GPU_DMA` | 40 | Inter-partition VRAM copy |
+| `SYS_GPU_PLEDGE` | 41 | Monotonic syscall restriction |
+| `SYS_GPU_UNVEIL` | 42 | Lock VRAM range for DMA (one-shot) |
+| `SYS_MMAP` | 43 | Map data pages into shard address space |
 | `SYS_YIELD` | 62 | Cooperative yield to scheduler |
+
+## GPU Pledge Constants
+
+Bitmask values for `SYS_GPU_PLEDGE`:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `PLEDGE_SERIAL` | 1 | Permit serial write after pledge |
+| `PLEDGE_CHANNEL` | 2 | Permit channel send/recv after pledge |
+| `PLEDGE_GPU_DMA` | 4 | Permit GPU DMA after pledge |
 
 ## Capability Type Constants
 
@@ -71,6 +86,7 @@ The bootloader translates the UEFI memory map into this format before exiting bo
 | `CAP_CHANNEL` | 1 | IPC channel capability |
 | `CAP_SHARD` | 2 | Shard management capability |
 | `CAP_MEMORY` | 3 | Memory region capability |
+| `CAP_GPU_DMA` | 4 | GPU DMA capability |
 
 ## Channel Rights Constants
 
@@ -81,6 +97,12 @@ Bitmask values for channel capability rights:
 | `RIGHT_CHANNEL_SEND` | 1 | Permission to send on a channel |
 | `RIGHT_CHANNEL_RECV` | 2 | Permission to receive on a channel |
 | `RIGHT_CHANNEL_GRANT` | 4 | Permission to grant the capability to another shard |
+
+## GPU DMA Rights Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `RIGHT_GPU_DMA_WRITE` | 1 | Permission to write to target partition via DMA |
 
 ## Constraints
 
