@@ -269,6 +269,63 @@ pub unsafe extern "C" fn _start() -> ! {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Pipeline config page
+// ---------------------------------------------------------------------------
+
+const PIPELINE_CONFIG_VADDR: u64 = 0x10000;
+const PIPELINE_CONFIG_MAGIC: u32 = 0x50495045; // "PIPE"
+
+/// Create a config page for a pipeline stage and map it at PIPELINE_CONFIG_VADDR.
+///
+/// Same pattern as gpu::create_config_page — allocate frame, write via HHDM,
+/// map read-only with NX, track in shard's allocated_frames.
+fn create_pipeline_config(
+    shard_id: usize,
+    pml4_phys: u64,
+    stage: u32,
+    num_stages: u32,
+    channel_id: u32,
+    layers_start: u32,
+    layers_end: u32,
+) {
+    let config_phys = frame::alloc_frame_zeroed().expect("pipeline config frame");
+
+    // Write pipeline parameters via HHDM
+    let base = vmm::phys_to_virt(config_phys);
+    unsafe {
+        core::ptr::write_volatile(base as *mut u32, PIPELINE_CONFIG_MAGIC);
+        core::ptr::write_volatile(base.add(4) as *mut u32, stage);
+        core::ptr::write_volatile(base.add(8) as *mut u32, num_stages);
+        core::ptr::write_volatile(base.add(0x0C) as *mut u32, channel_id);
+        core::ptr::write_volatile(base.add(0x10) as *mut u32, layers_start);
+        core::ptr::write_volatile(base.add(0x14) as *mut u32, layers_end);
+    }
+
+    // Map as user-readable, not writable, not executable
+    vmm::map_4k(
+        pml4_phys,
+        PIPELINE_CONFIG_VADDR,
+        config_phys,
+        vmm::PTE_USER | vmm::PTE_NO_EXECUTE,
+    );
+
+    // Track frame for cleanup on shard destroy
+    let shard = unsafe { &mut (*(&raw mut shard::SHARDS))[shard_id] };
+    let fc = shard.frame_count;
+    assert!(fc < shard.allocated_frames.len(), "shard frame table full");
+    shard.allocated_frames[fc] = config_phys;
+    shard.frame_count = fc + 1;
+
+    serial_println!(
+        "Pipeline: config page for stage {} at virt {:#x} (layers {}-{})",
+        stage,
+        PIPELINE_CONFIG_VADDR,
+        layers_start,
+        layers_end
+    );
+}
+
 /// Main supervisor initialization — runs at higher-half virtual address.
 ///
 /// At this point, the boot trampoline has:
@@ -384,6 +441,33 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     // Sound: pointer arithmetic stays within the included binary's bounds.
     let end = unsafe { start.add(LLAMA_BIN.len()) };
     shard::create(start, end, "llama-inference", shard::Priority::Normal);
+
+    // Create pipeline-parallel inference shards (2 stages, 1 layer each)
+    static PIPELINE_BIN: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-pipeline.bin"));
+    {
+        let start = PIPELINE_BIN.as_ptr();
+        // Sound: pointer arithmetic stays within the included binary's bounds.
+        let end = unsafe { start.add(PIPELINE_BIN.len()) };
+
+        let s0 = shard::create(start, end, "llama-pipeline-0", shard::Priority::Normal);
+        let s1 = shard::create(start, end, "llama-pipeline-1", shard::Priority::Normal);
+
+        // Config pages: stage parameters at VA 0x10000
+        let s0_pml4 = unsafe { (*(&raw const shard::SHARDS))[s0].pml4_phys };
+        let s1_pml4 = unsafe { (*(&raw const shard::SHARDS))[s1].pml4_phys };
+        create_pipeline_config(s0, s0_pml4, 0, 2, 1, 0, 1);
+        create_pipeline_config(s1, s1_pml4, 1, 2, 1, 1, 2);
+
+        // Channel 1: bidirectional between stage 0 and stage 1
+        channel::init(1, s0, s1);
+        serial_println!("Pipeline: channel 1 (shard {} <-> shard {})", s0, s1);
+
+        // Both stages get SEND + RECV on channel 1
+        let rights = coconut_shared::RIGHT_CHANNEL_SEND | coconut_shared::RIGHT_CHANNEL_RECV;
+        capability::grant_to_shard(s0, coconut_shared::CAP_CHANNEL, 1, rights);
+        capability::grant_to_shard(s1, coconut_shared::CAP_CHANNEL, 1, rights);
+    }
 
     serial_println!();
 

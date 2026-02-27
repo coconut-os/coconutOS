@@ -375,5 +375,12 @@ fn main() {
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
+    // Copy llama-pipeline shard flat binary into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_LLAMA_PIPELINE_BIN") {
+        let dst = Path::new(&out_dir).join("shard-llama-pipeline.bin");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-llama-pipeline.bin");
+        println!("cargo::rerun-if-changed={}", shard_path);
+    }
+
     println!("cargo::rerun-if-changed=build.rs");
 }

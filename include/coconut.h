@@ -72,6 +72,22 @@ struct gpu_config {
 };
 
 /* -----------------------------------------------------------------------
+ * Pipeline config page — kernel-provided stage parameters at VA 0x10000
+ * ----------------------------------------------------------------------- */
+
+#define PIPELINE_CONFIG_VADDR  0x10000
+#define PIPELINE_CONFIG_MAGIC  0x50495045  /* "PIPE" */
+
+struct pipeline_config {
+    uint32_t magic;         /* +0x00 */
+    uint32_t stage;         /* +0x04 */
+    uint32_t num_stages;    /* +0x08 */
+    uint32_t channel_id;    /* +0x0C */
+    uint32_t layers_start;  /* +0x10 */
+    uint32_t layers_end;    /* +0x14 */
+};
+
+/* -----------------------------------------------------------------------
  * Generic syscall primitives
  *
  * Register inputs use the register-asm variable pattern so GCC treats
@@ -239,6 +255,16 @@ static inline const struct gpu_config *coconut_gpu_config(void)
 {
     const struct gpu_config *cfg = (const struct gpu_config *)GPU_CONFIG_VADDR;
     if (cfg->magic != GPU_CONFIG_MAGIC)
+        return 0;
+    return cfg;
+}
+
+/* Read and validate the pipeline config page. Returns pointer or 0 on bad magic. */
+static inline const struct pipeline_config *coconut_pipeline_config(void)
+{
+    const struct pipeline_config *cfg =
+        (const struct pipeline_config *)PIPELINE_CONFIG_VADDR;
+    if (cfg->magic != PIPELINE_CONFIG_MAGIC)
         return 0;
     return cfg;
 }

@@ -103,6 +103,28 @@ clang -target x86_64-unknown-none-elf -c "$LLAMA_DIR/start.S" \
 
 export COCONUT_SHARD_LLAMA_BIN="$TARGET_DIR/shard-llama-inference.bin"
 
+echo "==> Building llama-pipeline shard..."
+PIPELINE_DIR="$ROOT_DIR/shards/llama-pipeline"
+PIPELINE_OBJ_DIR="$TARGET_DIR/llama-pipeline"
+mkdir -p "$PIPELINE_OBJ_DIR"
+
+# SSE enabled — pipeline shard needs float math (same flags as llama-inference)
+clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
+    -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic \
+    -O2 -c "$PIPELINE_DIR/main.c" -o "$PIPELINE_OBJ_DIR/main.o"
+
+clang -target x86_64-unknown-none-elf -c "$PIPELINE_DIR/start.S" \
+    -o "$PIPELINE_OBJ_DIR/start.o"
+
+"$RUST_LLD" -flavor gnu -T "$ROOT_DIR/targets/shard.ld" --gc-sections \
+    "$PIPELINE_OBJ_DIR/start.o" "$PIPELINE_OBJ_DIR/main.o" \
+    -o "$PIPELINE_OBJ_DIR/llama-pipeline.elf"
+
+"$LLVM_OBJCOPY" -O binary "$PIPELINE_OBJ_DIR/llama-pipeline.elf" \
+    "$TARGET_DIR/shard-llama-pipeline.bin"
+
+export COCONUT_SHARD_LLAMA_PIPELINE_BIN="$TARGET_DIR/shard-llama-pipeline.bin"
+
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \
     --manifest-path "$ROOT_DIR/Cargo.toml"
