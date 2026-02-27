@@ -307,6 +307,18 @@ fn clear_sensitive_cpu_state() {
     }
 }
 
+/// Read the CPU timestamp counter (RDTSC). Used for per-syscall cycle counting.
+#[inline(always)]
+pub fn read_tsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // Sound: rdtsc is always available on x86-64, no memory side-effects
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
+    }
+    (hi as u64) << 32 | lo as u64
+}
+
 /// Main scheduler loop. Runs on the supervisor's stack (__stack_top).
 /// Picks Ready shards and switches to them. Returns when all shards
 /// are Exited/Destroyed.
@@ -320,6 +332,11 @@ pub fn run_loop() -> ! {
 
                 let shard = unsafe { &mut (*(&raw mut SHARDS))[id] };
                 shard.state = ShardState::Running;
+                shard.context_switches += 1;
+                // Record tick of first scheduling for wall-time calculation
+                if shard.first_scheduled_tick == 0 {
+                    shard.first_scheduled_tick = unsafe { *(&raw const pit::TICKS) };
+                }
                 unsafe {
                     *(&raw mut CURRENT_SHARD) = id;
                 }
@@ -366,6 +383,9 @@ pub fn run_loop() -> ! {
         }
     }
 
+    // Snapshot stats before destroying shards (destroy zeroes memory)
+    print_profiling_summary();
+
     // Destroy all exited shards
     for id in 0..MAX_SHARDS {
         let state = unsafe { (*(&raw const SHARDS))[id].state };
@@ -375,8 +395,49 @@ pub fn run_loop() -> ! {
     }
 
     crate::serial_println!();
-    crate::serial_println!("coconutOS supervisor v0.3.3: all shards completed.");
+    crate::serial_println!("coconutOS supervisor v0.3.4: all shards completed.");
     crate::serial_println!("Halting.");
 
     crate::halt();
+}
+
+/// Print per-shard profiling stats collected during the run.
+fn print_profiling_summary() {
+    let shards = unsafe { &*(&raw const SHARDS) };
+
+    crate::serial_println!();
+    crate::serial_println!("--- Shard Profiling Summary ---");
+    crate::serial_println!(
+        "ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name"
+    );
+
+    for id in 0..MAX_SHARDS {
+        let s = &shards[id];
+        if s.state == ShardState::Free {
+            continue;
+        }
+
+        let avg_cycles = if s.syscall_count > 0 {
+            s.syscall_cycles / s.syscall_count
+        } else {
+            0
+        };
+
+        let wall_ms = if s.first_scheduled_tick > 0 && s.last_exited_tick >= s.first_scheduled_tick
+        {
+            // PIT is ~1 kHz, so ticks ≈ milliseconds
+            s.last_exited_tick - s.first_scheduled_tick
+        } else {
+            0
+        };
+
+        // Extract name from null-padded byte array
+        let name_len = s.name.iter().position(|&b| b == 0).unwrap_or(20);
+        let name = core::str::from_utf8(&s.name[..name_len]).unwrap_or("?");
+
+        crate::serial_println!(
+            "{:2}  {:>8}  {:>14}  {:>8}  {:>9}  {}",
+            id, s.syscall_count, avg_cycles, s.context_switches, wall_ms, name
+        );
+    }
 }

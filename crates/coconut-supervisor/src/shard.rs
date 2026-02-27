@@ -81,6 +81,18 @@ pub struct ShardDescriptor {
     pub data_start: u64,
     /// End of mmap'd data region (exclusive).
     pub data_end: u64,
+    /// Shard name for profiling output (null-padded).
+    pub name: [u8; 20],
+    /// Total syscalls dispatched.
+    pub syscall_count: u64,
+    /// Total RDTSC cycles spent in syscall dispatch.
+    pub syscall_cycles: u64,
+    /// Number of times this shard was scheduled in.
+    pub context_switches: u64,
+    /// PIT tick when first scheduled (0 = never).
+    pub first_scheduled_tick: u64,
+    /// PIT tick when sys_exit called.
+    pub last_exited_tick: u64,
 }
 
 pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
@@ -107,6 +119,12 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
         code_end_vaddr: SHARD_CODE_VADDR + 0x1000,
         data_start: 0,
         data_end: 0,
+        name: [0; 20],
+        syscall_count: 0,
+        syscall_cycles: 0,
+        context_switches: 0,
+        first_scheduled_tick: 0,
+        last_exited_tick: 0,
     }
 }; MAX_SHARDS];
 
@@ -210,6 +228,11 @@ pub fn create(
 
     let shard = unsafe { &mut (*(&raw mut SHARDS))[id] };
 
+    // Store shard name (truncated to 20 bytes, null-padded)
+    let name_bytes = name.as_bytes();
+    let copy_len = name_bytes.len().min(20);
+    shard.name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
     // 1. Allocate PML4 for the shard
     let pml4_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc PML4");
     shard.pml4_phys = pml4_phys;
@@ -298,6 +321,7 @@ pub fn handle_sys_exit(exit_code: u64) {
     unsafe {
         let shard = &mut (*(&raw mut SHARDS))[id];
         shard.exit_code = exit_code;
+        shard.last_exited_tick = *(&raw const crate::pit::TICKS);
         shard.state = ShardState::Exited;
         *(&raw mut CURRENT_SHARD) = usize::MAX;
     }

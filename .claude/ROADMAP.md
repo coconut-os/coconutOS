@@ -41,7 +41,7 @@ End-to-end LLM inference on coconutOS.
 - [x] **3.2** C ABI / FFI layer
 - [x] **3.3** Port llama.cpp as proof-of-concept inference shard
 - [x] **3.4** Inference pipeline protocol (multi-shard pipeline parallelism)
-- [ ] **3.5** coconut-trace, coconut-prof tooling
+- [x] **3.5** coconut-trace, coconut-prof tooling
 - [ ] **3.6** Benchmark: Llama 70B inference latency vs. Linux/ROCm baseline
 
 ## Hardening & Multi-Vendor — Planned

@@ -213,12 +213,19 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         return u64::MAX;
     }
 
-    match nr {
-        coconut_shared::SYS_EXIT => {
-            shard::handle_sys_exit(a0);
-            // does not return
-            unreachable!()
-        }
+    let tsc_start = scheduler::read_tsc();
+
+    // SYS_EXIT doesn't return — record stats before calling
+    if nr == coconut_shared::SYS_EXIT {
+        let id = shard::current_shard();
+        let s = unsafe { &mut (*(&raw mut shard::SHARDS))[id] };
+        s.syscall_count += 1;
+        s.syscall_cycles += scheduler::read_tsc() - tsc_start;
+        shard::handle_sys_exit(a0);
+        unreachable!()
+    }
+
+    let result = match nr {
         coconut_shared::SYS_SERIAL_WRITE => handle_serial_write(a0, a1),
         coconut_shared::SYS_CHANNEL_SEND => handle_channel_send(a0, a1, a2),
         coconut_shared::SYS_CHANNEL_RECV => handle_channel_recv(a0, a1, a2),
@@ -254,7 +261,17 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
             crate::serial_println!("Unknown syscall: {}", nr);
             u64::MAX // error
         }
+    };
+
+    // Accumulate per-shard timing stats
+    let id = shard::current_shard();
+    if id < shard::MAX_SHARDS {
+        let s = unsafe { &mut (*(&raw mut shard::SHARDS))[id] };
+        s.syscall_count += 1;
+        s.syscall_cycles += scheduler::read_tsc() - tsc_start;
     }
+
+    result
 }
 
 /// Validate that a user buffer [ptr, ptr+len) lies entirely within
