@@ -21,6 +21,10 @@ static mut SUPERVISOR_RSP: u64 = 0;
 /// Last scheduled shard ID for round-robin fairness within priority levels.
 static mut LAST_SCHEDULED: usize = 0;
 
+/// Whether the CPU supports IBPB (Indirect Branch Prediction Barrier).
+/// Set once during init by detect_cpu_mitigations().
+static mut HAS_IBPB: bool = false;
+
 /// Low-level context switch: save callee-saved regs + RSP, load new RSP + regs.
 ///
 /// Arguments:
@@ -212,6 +216,97 @@ fn all_done() -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Side-channel mitigations
+// ---------------------------------------------------------------------------
+
+/// Probe CPUID for branch predictor mitigations. Called once during init.
+pub fn detect_cpu_mitigations() {
+    let edx: u32;
+    // Sound: CPUID is always available on x86-64, no side effects.
+    // rbx is LLVM-reserved — save/restore manually around cpuid.
+    unsafe {
+        core::arch::asm!(
+            "push rbx",
+            "mov eax, 7",
+            "xor ecx, ecx",
+            "cpuid",
+            "pop rbx",
+            out("eax") _, out("ecx") _, out("edx") edx,
+        );
+    }
+    // EDX bit 26: IBPB (Indirect Branch Prediction Barrier) support
+    if edx & (1 << 26) != 0 {
+        unsafe { *(&raw mut HAS_IBPB) = true; }
+        crate::serial_println!("Side-channel: IBPB supported, will flush branch predictor");
+    }
+}
+
+/// Clear microarchitectural state that could leak data between shards.
+///
+/// Prevents FPU/SSE register observation, debug register persistence,
+/// and branch predictor cross-shard inference.
+fn clear_sensitive_cpu_state() {
+    // Sound: these instructions have no preconditions beyond ring-0 privilege.
+    // We're in the supervisor run_loop, single-core, interrupts disabled.
+    unsafe {
+        core::arch::asm!(
+            // Reset x87 FPU to initial state
+            "fninit",
+            // Zero all XMM registers (SSE state)
+            "xorps xmm0, xmm0",
+            "xorps xmm1, xmm1",
+            "xorps xmm2, xmm2",
+            "xorps xmm3, xmm3",
+            "xorps xmm4, xmm4",
+            "xorps xmm5, xmm5",
+            "xorps xmm6, xmm6",
+            "xorps xmm7, xmm7",
+            "xorps xmm8, xmm8",
+            "xorps xmm9, xmm9",
+            "xorps xmm10, xmm10",
+            "xorps xmm11, xmm11",
+            "xorps xmm12, xmm12",
+            "xorps xmm13, xmm13",
+            "xorps xmm14, xmm14",
+            "xorps xmm15, xmm15",
+            // Reset MXCSR to default (0x1F80: all exceptions masked, round-to-nearest)
+            "sub rsp, 4",
+            "mov dword ptr [rsp], 0x1F80",
+            "ldmxcsr [rsp]",
+            "add rsp, 4",
+            // Clear debug breakpoint addresses and disable all breakpoints
+            "xor eax, eax",
+            "mov dr0, rax",
+            "mov dr1, rax",
+            "mov dr2, rax",
+            "mov dr3, rax",
+            // DR7: bit 10 must be 1 (reserved), all breakpoints disabled
+            "mov eax, 0x400",
+            "mov dr7, rax",
+            out("rax") _,
+            out("xmm0") _, out("xmm1") _, out("xmm2") _, out("xmm3") _,
+            out("xmm4") _, out("xmm5") _, out("xmm6") _, out("xmm7") _,
+            out("xmm8") _, out("xmm9") _, out("xmm10") _, out("xmm11") _,
+            out("xmm12") _, out("xmm13") _, out("xmm14") _, out("xmm15") _,
+        );
+    }
+
+    // IBPB: flush indirect branch predictor to prevent cross-shard speculation
+    if unsafe { *(&raw const HAS_IBPB) } {
+        unsafe {
+            core::arch::asm!(
+                "mov ecx, 0x49",
+                "xor edx, edx",
+                "mov eax, 1",
+                "wrmsr",
+                out("eax") _, out("ecx") _, out("edx") _,
+                options(nomem, nostack),
+            );
+        }
+    }
+}
+
 /// Main scheduler loop. Runs on the supervisor's stack (__stack_top).
 /// Picks Ready shards and switches to them. Returns when all shards
 /// are Exited/Destroyed.
@@ -235,6 +330,9 @@ pub fn run_loop() -> ! {
                     *(&raw mut syscall::KERNEL_RSP) = shard.kernel_stack_top;
                 }
                 vmm::write_cr3(shard.pml4_phys);
+
+                // Clear FPU/SSE/debug state to prevent side-channel leakage between shards
+                clear_sensitive_cpu_state();
 
                 // Switch to the shard's kernel context
                 unsafe {
@@ -277,7 +375,7 @@ pub fn run_loop() -> ! {
     }
 
     crate::serial_println!();
-    crate::serial_println!("coconutOS supervisor v2.5.0: all shards completed.");
+    crate::serial_println!("coconutOS supervisor v2.6.0: all shards completed.");
     crate::serial_println!("Halting.");
 
     crate::halt();

@@ -64,7 +64,7 @@ pub fn init() {
         // Install specific fault handlers
         IDT[0] = IdtEntry::new(isr_stub_0 as *const () as usize);
         IDT[8] = IdtEntry::new(isr_stub_8 as *const () as usize);
-        IDT[13] = IdtEntry::new(isr_stub_13 as *const () as usize);
+        IDT[13] = IdtEntry::new(isr_gpf as *const () as usize);
         IDT[14] = IdtEntry::new(isr_stub_14 as *const () as usize);
 
         // Timer ISR at vector 32 (PIT IRQ 0, remapped by PIC)
@@ -112,13 +112,37 @@ unsafe extern "C" fn isr_stub_8() {
     );
 }
 
-/// #13 General Protection Fault (error code pushed by CPU)
+/// #13 General Protection Fault — user-mode aware.
+///
+/// Kernel mode: fatal, dispatches to fault_common.
+/// User mode: kills the faulting shard via handle_sys_exit.
+///
+/// Stack at entry (error code pushed by CPU):
+///   [RSP+0]  = error code
+///   [RSP+8]  = RIP
+///   [RSP+16] = CS
 #[unsafe(naked)]
-unsafe extern "C" fn isr_stub_13() {
+unsafe extern "C" fn isr_gpf() {
     naked_asm!(
+        // Check CS RPL — user mode has bits 0:1 set
+        "test qword ptr [rsp + 16], 3",
+        "jnz 2f",
+
+        // Kernel mode: fatal
         "push 13",
-        "jmp {handler}",
-        handler = sym fault_common,
+        "jmp {fault_common}",
+
+        // User mode: kill the shard
+        "2:",
+        "mov rdi, [rsp + 8]",   // faulting RIP
+        "call {gpf_kill}",
+        // gpf_kill_shard never returns
+        "3:",
+        "hlt",
+        "jmp 3b",
+
+        fault_common = sym fault_common,
+        gpf_kill = sym gpf_kill_shard,
     );
 }
 
@@ -186,6 +210,13 @@ extern "C" fn fault_handler_rust(vector: u64, error_code: u64, rip: u64) {
         unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
         crate::serial_println!("  CR2:        {:#x}", cr2);
     }
+}
+
+/// Kill a shard that caused a user-mode GPF (e.g. rdtsc with CR4.TSD set).
+extern "C" fn gpf_kill_shard(rip: u64) {
+    let id = crate::shard::current_shard();
+    crate::serial_println!("GPF: shard {} faulted at RIP {:#x}, killing", id, rip);
+    crate::shard::handle_sys_exit(u64::MAX);
 }
 
 // ---------------------------------------------------------------------------

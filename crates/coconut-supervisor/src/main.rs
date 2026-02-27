@@ -289,7 +289,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v2.5.0 booting...");
+    serial_println!("coconutOS supervisor v2.6.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -332,6 +332,21 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     // Initialize PIT (~1ms periodic timer on channel 0)
     pit::init();
     serial_println!("PIT: configured (~1ms periodic, channel 0)");
+
+    // Prevent user-mode timing attacks — CR4.TSD makes rdtsc/rdtscp ring-0 only
+    unsafe {
+        asm!(
+            "mov rax, cr4",
+            "or rax, 4",
+            "mov cr4, rax",
+            out("rax") _,
+            options(nomem, nostack),
+        );
+    }
+    serial_println!("Side-channel: CR4.TSD set (rdtsc restricted to ring 0)");
+
+    // Detect CPU-level mitigations (IBPB for branch predictor flushing)
+    scheduler::detect_cpu_mitigations();
 
     // Discover ACPI tables (RSDP is in low memory, accessible via HHDM)
     acpi::init(boot_info.acpi_rsdp_addr);
