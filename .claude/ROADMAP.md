@@ -16,9 +16,9 @@ Functional microkernel with CPU-only shards, no GPU support.
 GPU HAL shard for AMD RDNA3/CDNA3, basic compute dispatch.
 
 - [x] **1.1** GPU PCIe enumeration and IOMMU domain setup
-- [ ] **1.2** AMD GPU HAL shard: device init, memory alloc, command queue
-- [ ] **1.3** Basic compute shader dispatch (matrix multiply kernel)
-- [ ] **1.4** GPU memory management with typed allocations
+- [x] **1.2** GPU HAL shard: device init, memory alloc, command queue
+- [x] **1.3** Basic compute dispatch (4×4 matrix multiply via command ring)
+- [x] **1.4** GPU memory management with typed allocations
 - [ ] **1.5** VRAM zeroing on free, W^X enforcement
 - [ ] **1.6** Performance baseline: compare GPU compute throughput vs. Linux/ROCm
 
