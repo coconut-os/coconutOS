@@ -8,7 +8,7 @@ use core::arch::asm;
 
 use coconut_shared::{
     SYS_CHANNEL_RECV, SYS_CHANNEL_SEND, SYS_GPU_DMA, SYS_GPU_PLEDGE, SYS_GPU_UNVEIL,
-    SYS_SERIAL_WRITE, SYS_YIELD,
+    SYS_PERF_COUNTER, SYS_SERIAL_WRITE, SYS_YIELD,
 };
 
 /// Terminate the current shard with the given exit code.
@@ -135,6 +135,26 @@ pub fn channel_recv(channel: usize, buf: &mut [u8]) -> u64 {
             out("rcx") _, out("r11") _,
             lateout("rdi") _, lateout("rsi") _, lateout("rdx") _,
             out("r8") _, out("r9") _, out("r10") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Read the CPU cycle counter via the supervisor.
+///
+/// Returns the current TSC value. Useful for measuring elapsed cycles
+/// between operations (e.g., per-token inference latency).
+pub fn perf_counter() -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYS_PERF_COUNTER,
+            lateout("rax") ret,
+            out("rcx") _, out("r11") _,
+            out("rdi") _, out("rsi") _,
+            out("rdx") _, out("r8") _, out("r9") _, out("r10") _,
             options(nostack),
         );
     }

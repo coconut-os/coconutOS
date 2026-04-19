@@ -36,6 +36,7 @@ Shards must define `#[no_mangle] pub extern "C" fn main()`.
 | `channel_send(ch, buf)` | `SYS_CHANNEL_SEND` | Send IPC message |
 | `channel_recv(ch, buf)` | `SYS_CHANNEL_RECV` | Receive IPC message (blocking) |
 | `yield_now()` | `SYS_YIELD` | Cooperative yield |
+| `perf_counter()` | `SYS_PERF_COUNTER` | Read CPU cycle counter (TSC) |
 
 All wrappers correctly declare clobbered registers — the kernel's `syscall_entry` only preserves callee-saved regs (RBX, RBP, R12-R15).
 

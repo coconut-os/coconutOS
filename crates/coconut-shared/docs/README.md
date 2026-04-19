@@ -68,6 +68,7 @@ The bootloader translates the UEFI memory map into this format before exiting bo
 | `SYS_GPU_UNVEIL` | 42 | Lock VRAM range for DMA (one-shot) |
 | `SYS_MMAP` | 43 | Map data pages into shard address space |
 | `SYS_YIELD` | 62 | Cooperative yield to scheduler |
+| `SYS_PERF_COUNTER` | 71 | Read CPU cycle counter (RDTSC) |
 
 ## GPU Pledge Constants
 
@@ -77,6 +78,7 @@ Bitmask values for `SYS_GPU_PLEDGE`:
 |----------|-------|-------------|
 | `PLEDGE_SERIAL` | 1 | Permit serial write after pledge |
 | `PLEDGE_CHANNEL` | 2 | Permit channel send/recv after pledge |
+| `PLEDGE_PERF` | 8 | Permit perf counter read after pledge |
 | `PLEDGE_GPU_DMA` | 4 | Permit GPU DMA after pledge |
 
 ## Capability Type Constants

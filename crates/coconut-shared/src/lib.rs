@@ -34,10 +34,14 @@ pub const SYS_MMAP: u64 = 43;
 /// Yield the current time slice voluntarily.
 pub const SYS_YIELD: u64 = 62;
 
+/// Read the CPU cycle counter (RDTSC). Returns current TSC value.
+pub const SYS_PERF_COUNTER: u64 = 71;
+
 // GPU pledge bits — bitmask of allowed syscall categories after pledge
 pub const PLEDGE_SERIAL: u64 = 1 << 0;
 pub const PLEDGE_CHANNEL: u64 = 1 << 1;
 pub const PLEDGE_GPU_DMA: u64 = 1 << 2;
+pub const PLEDGE_PERF: u64 = 1 << 3;
 
 // Capability syscalls
 /// Grant a capability copy to another shard. a0=handle, a1=target_shard, a2=new_rights.

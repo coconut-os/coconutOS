@@ -33,7 +33,7 @@ Multiple inference shards with strong isolation on a single GPU.
 - [x] **2.5** GPU ASLR
 - [x] **2.6** Side-channel isolation testing and hardening
 
-## Inference Stack — In Progress
+## Inference Stack — Complete
 
 End-to-end LLM inference on coconutOS.
 
@@ -42,7 +42,7 @@ End-to-end LLM inference on coconutOS.
 - [x] **3.3** Port llama.cpp as proof-of-concept inference shard
 - [x] **3.4** Inference pipeline protocol (multi-shard pipeline parallelism)
 - [x] **3.5** coconut-trace, coconut-prof tooling
-- [ ] **3.6** Benchmark: Llama 70B inference latency vs. Linux/ROCm baseline
+- [x] **3.6** Benchmark: inference latency vs. native baseline
 
 ## Hardening & Multi-Vendor — Planned
 

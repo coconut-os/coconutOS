@@ -45,11 +45,13 @@ typedef unsigned long      size_t;
 #define SYS_GPU_UNVEIL   42
 #define SYS_MMAP         43
 #define SYS_YIELD        62
+#define SYS_PERF_COUNTER 71
 
 /* Pledge bits */
 #define PLEDGE_SERIAL   (1ULL << 0)
 #define PLEDGE_CHANNEL  (1ULL << 1)
 #define PLEDGE_GPU_DMA  (1ULL << 2)
+#define PLEDGE_PERF     (1ULL << 3)
 
 /* Error sentinel returned by failing syscalls */
 #define COCONUT_ERROR    (~0ULL)
@@ -174,6 +176,11 @@ static inline uint64_t coconut_serial_write(const void *buf, size_t len)
 static inline void coconut_yield(void)
 {
     coconut_syscall0(SYS_YIELD);
+}
+
+static inline uint64_t coconut_perf_counter(void)
+{
+    return coconut_syscall0(SYS_PERF_COUNTER);
 }
 
 static inline uint64_t coconut_gpu_pledge(uint64_t mask)

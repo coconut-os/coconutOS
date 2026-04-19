@@ -395,7 +395,7 @@ pub fn run_loop() -> ! {
     }
 
     crate::serial_println!();
-    crate::serial_println!("coconutOS supervisor v0.3.4: all shards completed.");
+    crate::serial_println!("coconutOS supervisor v0.3.6: all shards completed.");
     crate::serial_println!("Halting.");
 
     crate::halt();
@@ -410,6 +410,10 @@ fn print_profiling_summary() {
     crate::serial_println!(
         "ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name"
     );
+
+    // Track TSC and tick ranges across all shards for frequency estimation
+    let mut earliest_tick: u64 = u64::MAX;
+    let mut latest_tick: u64 = 0;
 
     for id in 0..MAX_SHARDS {
         let s = &shards[id];
@@ -431,6 +435,13 @@ fn print_profiling_summary() {
             0
         };
 
+        if s.first_scheduled_tick > 0 && s.first_scheduled_tick < earliest_tick {
+            earliest_tick = s.first_scheduled_tick;
+        }
+        if s.last_exited_tick > latest_tick {
+            latest_tick = s.last_exited_tick;
+        }
+
         // Extract name from null-padded byte array
         let name_len = s.name.iter().position(|&b| b == 0).unwrap_or(20);
         let name = core::str::from_utf8(&s.name[..name_len]).unwrap_or("?");
@@ -439,5 +450,11 @@ fn print_profiling_summary() {
             "{:2}  {:>8}  {:>14}  {:>8}  {:>9}  {}",
             id, s.syscall_count, avg_cycles, s.context_switches, wall_ms, name
         );
+    }
+
+    // Emit total run duration in PIT ticks (~ms) for cycle-to-time conversion
+    if earliest_tick != u64::MAX && latest_tick > earliest_tick {
+        let run_ms = latest_tick - earliest_tick;
+        crate::serial_println!("bench: run_ms={}", run_ms);
     }
 }

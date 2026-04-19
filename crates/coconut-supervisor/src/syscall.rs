@@ -189,6 +189,7 @@ fn pledge_allows(nr: u64) -> bool {
             coconut_shared::PLEDGE_CHANNEL
         }
         coconut_shared::SYS_GPU_DMA => coconut_shared::PLEDGE_GPU_DMA,
+        coconut_shared::SYS_PERF_COUNTER => coconut_shared::PLEDGE_PERF,
         // CAP_*, FS_*, and anything else: denied once pledged
         _ => return false,
     };
@@ -253,6 +254,7 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         coconut_shared::SYS_GPU_DMA => gpu::handle_dma(a0, a1, a2),
         coconut_shared::SYS_GPU_PLEDGE => gpu::handle_gpu_pledge(a0),
         coconut_shared::SYS_GPU_UNVEIL => gpu::handle_gpu_unveil(a0, a1),
+        coconut_shared::SYS_PERF_COUNTER => scheduler::read_tsc(),
         coconut_shared::SYS_YIELD => {
             scheduler::handle_sys_yield();
             0

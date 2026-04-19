@@ -2,7 +2,7 @@
 
 A Rust microkernel for GPU-isolated AI inference.
 
-> **Status:** GPU isolation complete, inference stack in progress — runs a transformer forward pass end-to-end.
+> **Status:** GPU isolation and inference stack complete — runs a transformer forward pass end-to-end with per-token benchmarking.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It boots on x86-64 (QEMU/UEFI), isolates GPU partitions via IOMMU, and runs a proof-of-concept transformer inference engine as a user-mode shard.
 
@@ -31,6 +31,7 @@ coconutOS is a capability-based microkernel written in Rust, designed from the g
 - C ABI / FFI layer (`coconut.h` — header-only syscall wrappers)
 - Proof-of-concept llama2.c transformer inference shard (model loading, RMSNorm, multi-head attention with RoPE, SiLU FFN, softmax)
 - FXSAVE/FXRSTOR in timer ISR — SSE state preserved across preemption
+- Per-token benchmarking via `SYS_PERF_COUNTER` with native baseline comparison
 
 ## Quick Start
 
@@ -64,7 +65,7 @@ On first build, `rustup` installs the nightly toolchain and components from `rus
 ### Expected Output
 
 ```
-coconutOS supervisor v0.3.4 booting...
+coconutOS supervisor v0.3.6 booting...
 Higher-half: page tables built, CR3 switched
 ...
 CR4: OSFXSR + TSD set
@@ -79,6 +80,10 @@ GPU DMA: recv ok, verified
 Hello from coconutFS!
 Hello from C shard!
 llama-inference: inference complete (16 tokens)
+--- Inference Benchmark ---
+bench: total_tokens=16 total_cycles=... dim=32 layers=2
+bench: token=0 cycles=...
+...
 llama-pipeline stage 0: done
 llama-pipeline stage 1: done
 
@@ -87,7 +92,7 @@ ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
  0        12            4523         8        45  gpu-hal
  ...
 
-coconutOS supervisor v0.3.4: all shards completed.
+coconutOS supervisor v0.3.6: all shards completed.
 Halting.
 ```
 
@@ -166,6 +171,7 @@ coconutOS/
 | 42 | `SYS_GPU_UNVEIL` | Lock VRAM range for DMA |
 | 43 | `SYS_MMAP` | Map data pages into shard address space |
 | 62 | `SYS_YIELD` | Cooperative yield |
+| 71 | `SYS_PERF_COUNTER` | Read CPU cycle counter (TSC) |
 
 ## Documentation
 
@@ -181,7 +187,7 @@ coconutOS/
 | CPU-Only Shard Model (0.1-0.6) | Complete |
 | GPU Bring-Up (1.1-1.6) | Complete |
 | Multi-Shard GPU Isolation (2.1-2.6) | Complete |
-| Inference Stack (3.1-3.5) | In Progress |
+| Inference Stack (3.1-3.6) | Complete |
 | Hardening & Multi-Vendor | Planned |
 
 See [.claude/ROADMAP.md](.claude/ROADMAP.md) for detailed milestones.

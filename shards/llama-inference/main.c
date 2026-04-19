@@ -455,13 +455,20 @@ int main(void)
         return 1;
     }
 
-    /* 6. Run inference for 16 tokens */
+    /* 6. Run inference for 16 tokens with per-token timing */
     int token = 0; /* start token */
     int n_tokens = 16;
+    uint64_t token_cycles[16];
+
+    uint64_t bench_start = coconut_perf_counter();
 
     for (int pos = 0; pos < n_tokens; pos++) {
+        uint64_t t0 = coconut_perf_counter();
         forward(&cfg, &w, &s, token, pos);
         int next = argmax(s.logits, cfg.vocab_size);
+        uint64_t t1 = coconut_perf_counter();
+
+        token_cycles[pos] = t1 - t0;
 
         coconut_puts("llama-inference: token ");
         print_u64(pos);
@@ -471,6 +478,29 @@ int main(void)
         coconut_puts("'\n");
 
         token = next;
+    }
+
+    uint64_t bench_end = coconut_perf_counter();
+    uint64_t total_cycles = bench_end - bench_start;
+
+    /* Benchmark output — machine-parseable by coconut-prof.py */
+    coconut_puts("--- Inference Benchmark ---\n");
+    coconut_puts("bench: total_tokens=");
+    print_u64(n_tokens);
+    coconut_puts(" total_cycles=");
+    print_u64(total_cycles);
+    coconut_puts(" dim=");
+    print_u64(cfg.dim);
+    coconut_puts(" layers=");
+    print_u64(cfg.n_layers);
+    coconut_puts("\n");
+
+    for (int i = 0; i < n_tokens; i++) {
+        coconut_puts("bench: token=");
+        print_u64(i);
+        coconut_puts(" cycles=");
+        print_u64(token_cycles[i]);
+        coconut_puts("\n");
     }
 
     coconut_puts("llama-inference: inference complete (16 tokens)\n");

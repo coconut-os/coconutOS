@@ -110,6 +110,7 @@ MMIO devices mapped at `0xFFFFFFFFC0000000+` (PDPT_kern[511]).
 | 42 | `SYS_GPU_UNVEIL` | `a0`: offset, `a1`: size | Lock VRAM range for DMA (one-shot) |
 | 43 | `SYS_MMAP` | `a0`: va_start (page-aligned), `a1`: num_pages | Map data pages into shard address space |
 | 62 | `SYS_YIELD` | — | Cooperative yield |
+| 71 | `SYS_PERF_COUNTER` | — | Read CPU cycle counter (RDTSC) |
 
 Entry: `syscall` instruction → `syscall_entry` (naked stub) → dispatch by RAX.
 
