@@ -125,6 +125,28 @@ clang -target x86_64-unknown-none-elf -c "$PIPELINE_DIR/start.S" \
 
 export COCONUT_SHARD_LLAMA_PIPELINE_BIN="$TARGET_DIR/shard-llama-pipeline.bin"
 
+echo "==> Building fuzz-syscall shard..."
+FUZZ_DIR="$ROOT_DIR/shards/fuzz-syscall"
+FUZZ_OBJ_DIR="$TARGET_DIR/fuzz-syscall"
+mkdir -p "$FUZZ_OBJ_DIR"
+
+# SSE disabled — no float math in fuzz shard
+clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
+    -mno-sse -mno-sse2 -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic \
+    -O2 -c "$FUZZ_DIR/main.c" -o "$FUZZ_OBJ_DIR/main.o"
+
+clang -target x86_64-unknown-none-elf -c "$FUZZ_DIR/start.S" \
+    -o "$FUZZ_OBJ_DIR/start.o"
+
+"$RUST_LLD" -flavor gnu -T "$ROOT_DIR/targets/shard.ld" --gc-sections \
+    "$FUZZ_OBJ_DIR/start.o" "$FUZZ_OBJ_DIR/main.o" \
+    -o "$FUZZ_OBJ_DIR/fuzz-syscall.elf"
+
+"$LLVM_OBJCOPY" -O binary "$FUZZ_OBJ_DIR/fuzz-syscall.elf" \
+    "$TARGET_DIR/shard-fuzz-syscall.bin"
+
+export COCONUT_SHARD_FUZZ_BIN="$TARGET_DIR/shard-fuzz-syscall.bin"
+
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \
     --manifest-path "$ROOT_DIR/Cargo.toml"

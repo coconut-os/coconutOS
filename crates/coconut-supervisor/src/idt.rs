@@ -146,13 +146,37 @@ unsafe extern "C" fn isr_gpf() {
     );
 }
 
-/// #14 Page Fault (error code pushed by CPU)
+/// #14 Page Fault — user-mode aware.
+///
+/// Kernel mode: fatal, dispatches to fault_common.
+/// User mode: kills the faulting shard via handle_sys_exit.
+///
+/// Stack at entry (error code pushed by CPU):
+///   [RSP+0]  = error code
+///   [RSP+8]  = RIP
+///   [RSP+16] = CS
 #[unsafe(naked)]
 unsafe extern "C" fn isr_stub_14() {
     naked_asm!(
+        // Check CS RPL — user mode has bits 0:1 set
+        "test qword ptr [rsp + 16], 3",
+        "jnz 2f",
+
+        // Kernel mode: fatal
         "push 14",
-        "jmp {handler}",
-        handler = sym fault_common,
+        "jmp {fault_common}",
+
+        // User mode: kill the shard
+        "2:",
+        "mov rdi, [rsp + 8]",   // faulting RIP
+        "call {pf_kill}",
+        // pf_kill_shard never returns
+        "3:",
+        "hlt",
+        "jmp 3b",
+
+        fault_common = sym fault_common,
+        pf_kill = sym pf_kill_shard,
     );
 }
 
@@ -216,6 +240,16 @@ extern "C" fn fault_handler_rust(vector: u64, error_code: u64, rip: u64) {
 extern "C" fn gpf_kill_shard(rip: u64) {
     let id = crate::shard::current_shard();
     crate::serial_println!("GPF: shard {} faulted at RIP {:#x}, killing", id, rip);
+    crate::shard::handle_sys_exit(u64::MAX);
+}
+
+/// Kill a shard that caused a user-mode page fault (e.g. accessing unmapped memory).
+extern "C" fn pf_kill_shard(rip: u64) {
+    let id = crate::shard::current_shard();
+    let cr2: u64;
+    // Sound: CR2 is read-only and holds the faulting address after #PF.
+    unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
+    crate::serial_println!("PF: shard {} faulted at RIP {:#x}, addr {:#x}, killing", id, rip, cr2);
     crate::shard::handle_sys_exit(u64::MAX);
 }
 

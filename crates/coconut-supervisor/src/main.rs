@@ -469,6 +469,14 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
         capability::grant_to_shard(s1, coconut_shared::CAP_CHANNEL, 1, rights);
     }
 
+    // Create syscall fuzz shard (boundary torture tests)
+    static FUZZ_BIN: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shard-fuzz-syscall.bin"));
+    let start = FUZZ_BIN.as_ptr();
+    // Sound: pointer arithmetic stays within the included binary's bounds.
+    let end = unsafe { start.add(FUZZ_BIN.len()) };
+    shard::create(start, end, "fuzz-syscall", shard::Priority::Low);
+
     serial_println!();
 
     // Unmask PIT timer IRQ and enable interrupts

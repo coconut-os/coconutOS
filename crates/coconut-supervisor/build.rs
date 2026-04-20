@@ -382,5 +382,12 @@ fn main() {
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
+    // Copy fuzz-syscall shard flat binary into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_FUZZ_BIN") {
+        let dst = Path::new(&out_dir).join("shard-fuzz-syscall.bin");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-fuzz-syscall.bin");
+        println!("cargo::rerun-if-changed={}", shard_path);
+    }
+
     println!("cargo::rerun-if-changed=build.rs");
 }

@@ -359,10 +359,16 @@ pub fn handle_sys_mmap(va_start: u64, num_pages: u64) -> u64 {
         return u64::MAX;
     }
 
-    // Check overlap with existing data region
+    // New mappings must be contiguous with the existing data region.
+    // Disjoint mappings would create unmapped gaps where buffer validation
+    // passes but pages are absent, causing a kernel page fault on access.
     if shard.data_start != 0 {
         if va_start < shard.data_end && va_end > shard.data_start {
             crate::serial_println!("Shard {}: mmap: overlaps existing data region", id);
+            return u64::MAX;
+        }
+        if va_end != shard.data_start && va_start != shard.data_end {
+            crate::serial_println!("Shard {}: mmap: non-contiguous (must abut existing region)", id);
             return u64::MAX;
         }
     }
