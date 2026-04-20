@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 mtools ovmf clang lld
+
+      - name: Build and boot
+        run: |
+          # Run QEMU with a 30-second timeout — the OS boots, runs all shards
+          # (including fuzz-syscall), prints profiling summary, and halts.
+          timeout 30 ./scripts/qemu-run.sh -no-reboot 2>&1 | tee boot.log || true
+
+      - name: Verify boot succeeded
+        run: |
+          echo "==> Checking boot log..."
+
+          # Must reach the halt message
+          if ! grep -q "all shards completed" boot.log; then
+            echo "FAIL: supervisor did not complete"
+            cat boot.log
+            exit 1
+          fi
+
+          # Must not have a kernel panic
+          if grep -q "KERNEL PANIC" boot.log; then
+            echo "FAIL: kernel panic detected"
+            cat boot.log
+            exit 1
+          fi
+
+          # Fuzz shard must pass all tests
+          if grep -q "FAILURES DETECTED" boot.log; then
+            echo "FAIL: fuzz shard reported failures"
+            grep "FAIL:" boot.log
+            exit 1
+          fi
+
+          if grep -q "ALL TESTS PASSED" boot.log; then
+            echo "OK: fuzz shard passed all tests"
+          else
+            echo "WARN: fuzz shard output not found (may not have run)"
+          fi
+
+          echo "==> Boot log summary:"
+          grep -E "(booting|completed|PASS:|FAIL:|Fuzz Summary|Profiling)" boot.log || true
+          echo "==> CI passed"

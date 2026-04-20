@@ -1,5 +1,7 @@
 # coconutOS
 
+[![CI](https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml/badge.svg)](https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml)
+
 A Rust microkernel for GPU-isolated AI inference.
 
 > **Status:** GPU isolation and inference stack complete — runs a transformer forward pass end-to-end with per-token benchmarking.
