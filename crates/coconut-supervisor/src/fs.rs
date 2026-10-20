@@ -42,6 +42,33 @@ pub fn init() {
     );
 }
 
+/// Close every file a shard still has open. Called on exit: the table is
+/// shared by all shards, so a shard that dies mid-operation must not keep
+/// its entries forever.
+pub fn release_shard(shard_id: usize) {
+    let open_files = unsafe { &mut *(&raw mut OPEN_FILES) };
+    let mut released = 0;
+    for file in open_files.iter_mut() {
+        if file.active && file.shard_id == shard_id {
+            *file = OpenFile {
+                active: false,
+                shard_id: 0,
+                inode_nr: 0,
+                size: 0,
+                offset: 0,
+            };
+            released += 1;
+        }
+    }
+    if released > 0 {
+        crate::serial_println!(
+            "FS: released {} file(s) left open by shard {}",
+            released,
+            shard_id
+        );
+    }
+}
+
 /// Validate that a user buffer [ptr, ptr+len) is readable.
 /// Delegates to syscall module's validation which handles code, data, and stack regions.
 fn validate_user_read_buf(ptr: u64, len: u64) -> bool {

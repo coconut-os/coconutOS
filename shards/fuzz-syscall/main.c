@@ -31,6 +31,9 @@ void *memcpy(void *dest, const void *src, size_t n)
     return dest;
 }
 
+/* Size of the supervisor's shared open-file table (fs.rs) */
+#define MAX_OPEN_FILES 16
+
 /* -----------------------------------------------------------------------
  * Test infrastructure
  * ----------------------------------------------------------------------- */
@@ -172,6 +175,23 @@ static void test_filesystem(void)
     r = coconut_syscall3(SYS_FS_READ, fd, (uint64_t)buf, 0);
     check(r == COCONUT_ERROR, "fs_read: len=0 rejected");
     coconut_fs_close(fd);
+
+    /*
+     * The open-file table is shared by all shards. This shard runs at Low
+     * priority, after the others have exited or blocked, so every entry
+     * should be free: anything else is a descriptor leaked by the kernel.
+     */
+    uint64_t fds[MAX_OPEN_FILES + 1];
+    int opened = 0;
+    while (opened <= MAX_OPEN_FILES) {
+        fds[opened] = coconut_fs_open("/hello.txt", 10);
+        if (fds[opened] == COCONUT_ERROR)
+            break;
+        opened++;
+    }
+    check(opened == MAX_OPEN_FILES, "fs_open: all 16 descriptors available");
+    for (int i = 0; i < opened; i++)
+        coconut_fs_close(fds[i]);
 }
 
 /* -----------------------------------------------------------------------

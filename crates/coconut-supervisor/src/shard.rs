@@ -302,6 +302,7 @@ pub fn create(image: &[u8], name: &str, priority: Priority) -> usize {
 pub fn handle_sys_exit(exit_code: u64) {
     let id = current_shard();
     crate::serial_println!("Shard {}: sys_exit({})", id, exit_code);
+    crate::fs::release_shard(id);
 
     unsafe {
         let shard = &mut (*(&raw mut SHARDS))[id];
