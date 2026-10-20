@@ -24,9 +24,18 @@ jobs:
 
       - name: Build and boot
         run: |
-          # Run QEMU with a 30-second timeout — the OS boots, runs all shards
-          # (including fuzz-syscall), prints profiling summary, and halts.
-          timeout 30 ./scripts/qemu-run.sh -no-reboot 2>&1 | tee boot.log || true
+          # The OS boots, runs all shards (including fuzz-syscall), prints the
+          # profiling summary, and halts. QEMU stays up after the halt, so stop
+          # it once the halt (or a panic) is logged. A fixed timeout around the
+          # whole script also cut off the cold build.
+          ./scripts/qemu-run.sh > boot.log 2>&1 &
+          for _ in $(seq 300); do
+            grep -qE "^Halting\.|KERNEL PANIC" boot.log && break
+            kill -0 $! 2>/dev/null || break
+            sleep 1
+          done
+          pkill -f qemu-system-x86_64 || true
+          cat boot.log
 
       - name: Verify boot succeeded
         run: |
