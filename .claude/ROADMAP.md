@@ -50,7 +50,7 @@ Production hardening, additional GPU vendor support.
 
 - [x] **4.0** Shard ELF segments (W^X text/rodata/data+bss, real globals in shards)
 - [ ] **4.1** Security audit of supervisor (external)
-- [ ] **4.2** Fuzzing campaign (syzkaller-style for supervisor syscalls)
+- [x] **4.2** Fuzzing campaign (syzkaller-style for supervisor syscalls)
 - [ ] **4.3** NVIDIA GPU HAL shard (Hopper/Blackwell)
 - [ ] **4.4** Apple GPU HAL shard (M-series, ARM64 port)
 - [ ] **4.5** Network shard with RDMA/GPU-Direct support

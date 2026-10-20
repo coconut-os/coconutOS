@@ -4,7 +4,7 @@
 
 A Rust microkernel for GPU-isolated AI inference.
 
-> **Status:** v0.4.0. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall boundary test suite in CI on every push.
+> **Status:** v0.4.2. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall test suite and a random syscall campaign in CI on every push.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It boots on x86-64 (QEMU/UEFI), isolates GPU partitions via IOMMU, and runs a proof-of-concept transformer inference engine as a user-mode shard.
 
@@ -38,6 +38,7 @@ coconutOS is a capability-based microkernel written in Rust, designed from the g
 
 **Testing**
 - Syscall boundary test shard (`fuzz-syscall`) — adversarial inputs against every syscall handler
+- Seeded random syscall campaign with typed, boundary-biased arguments (syzkaller-style); every run prints its seed for exact replay
 - CI builds and boots the full system in QEMU on every push and fails on kernel panics, killed shards, or test failures
 - Bootable image attached to every [release](https://github.com/coconut-os/coconutOS/releases)
 
@@ -88,7 +89,7 @@ On Linux, the firmware is usually at `/usr/share/OVMF/OVMF_CODE_4M.fd` or `/usr/
 Abridged serial output:
 
 ```
-coconutOS supervisor v0.4.0 booting...
+coconutOS supervisor v0.4.2 booting...
 Higher-half: page tables built, CR3 switched
 ...
 IOMMU: translation enabled
@@ -121,7 +122,7 @@ ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
  ...
  7       254           22409         7          6  fuzz-syscall
 
-coconutOS supervisor v0.4.0: all shards completed.
+coconutOS supervisor v0.4.2: all shards completed.
 Halting.
 ```
 
@@ -213,7 +214,7 @@ coconutOS/
 - **[Architecture](docs/architecture.md)** — full system design: shard model, GPU HAL, security, scheduler, memory, IPC, filesystem
 - **[Syscall Reference](docs/syscalls.md)** — calling convention, every syscall, buffer validation, pledge
 - **[Writing Shards](docs/writing-shards.md)** — address space, C and Rust shards, wiring a new shard into the build
-- **[Testing](docs/testing.md)** — what CI checks, the syscall test shard, reproducing failures
+- **[Testing](docs/testing.md)** — what CI checks, the syscall test shard, the random campaign, replaying a seed
 - **[Building](docs/building.md)** — workspace layout, build targets, cargo configuration
 - **[Debugging](docs/debugging.md)** — GDB, serial output, common faults
 

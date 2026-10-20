@@ -34,6 +34,14 @@ void *memcpy(void *dest, const void *src, size_t n)
 /* Size of the supervisor's shared open-file table (fs.rs) */
 #define MAX_OPEN_FILES 16
 
+/*
+ * supervisor_main grants this shard CAP_CHANNEL(FUZZ_CHANNEL) with
+ * SEND | GRANT in slot 0. Shard IDs follow creation order there.
+ */
+#define FUZZ_CHANNEL     2
+#define FS_READER_SHARD  2
+#define FUZZ_SHARD       7
+
 /* -----------------------------------------------------------------------
  * Test infrastructure
  * ----------------------------------------------------------------------- */
@@ -41,38 +49,52 @@ void *memcpy(void *dest, const void *src, size_t n)
 static int pass_count;
 static int fail_count;
 
-static void print_u64(uint64_t v)
+/*
+ * Output lines are assembled in a buffer and written with one syscall.
+ * Syscalls are never preempted, so kernel messages cannot land in the
+ * middle of a line (the campaign seed must stay readable).
+ */
+struct line {
+    char buf[160];
+    size_t len;
+};
+
+static void line_str(struct line *l, const char *s)
 {
-    char buf[20];
-    int len = 0;
-    if (v == 0) {
-        buf[0] = '0';
-        len = 1;
-    } else {
-        while (v > 0) {
-            buf[len++] = '0' + (v % 10);
-            v /= 10;
-        }
-        for (int i = 0; i < len / 2; i++) {
-            char tmp = buf[i];
-            buf[i] = buf[len - 1 - i];
-            buf[len - 1 - i] = tmp;
-        }
-    }
-    coconut_serial_write(buf, len);
+    while (*s && l->len < sizeof(l->buf))
+        l->buf[l->len++] = *s++;
+}
+
+static void line_u64(struct line *l, uint64_t v)
+{
+    char digits[20];
+    int n = 0;
+    do {
+        digits[n++] = '0' + v % 10;
+        v /= 10;
+    } while (v > 0);
+    while (n > 0 && l->len < sizeof(l->buf))
+        l->buf[l->len++] = digits[--n];
+}
+
+static void line_end(struct line *l)
+{
+    line_str(l, "\n");
+    coconut_serial_write(l->buf, l->len);
 }
 
 static void check(int condition, const char *name)
 {
+    struct line l = { .len = 0 };
     if (condition) {
-        coconut_puts("PASS: ");
+        line_str(&l, "PASS: ");
         pass_count++;
     } else {
-        coconut_puts("FAIL: ");
+        line_str(&l, "FAIL: ");
         fail_count++;
     }
-    coconut_puts(name);
-    coconut_puts("\n");
+    line_str(&l, name);
+    line_end(&l);
 }
 
 /* -----------------------------------------------------------------------
@@ -115,6 +137,22 @@ static void test_serial_write(void)
     r = coconut_serial_write(stack_buf, 3);
     coconut_puts("\n");
     check(r == 0, "serial_write: valid buf on stack");
+}
+
+/* Open /hello.txt until the table is full, close everything, return the count */
+static int free_descriptors(void)
+{
+    uint64_t fds[MAX_OPEN_FILES + 1];
+    int opened = 0;
+    while (opened <= MAX_OPEN_FILES) {
+        fds[opened] = coconut_fs_open("/hello.txt", 10);
+        if (fds[opened] == COCONUT_ERROR)
+            break;
+        opened++;
+    }
+    for (int i = 0; i < opened; i++)
+        coconut_fs_close(fds[i]);
+    return opened;
 }
 
 /* -----------------------------------------------------------------------
@@ -181,17 +219,7 @@ static void test_filesystem(void)
      * priority, after the others have exited or blocked, so every entry
      * should be free: anything else is a descriptor leaked by the kernel.
      */
-    uint64_t fds[MAX_OPEN_FILES + 1];
-    int opened = 0;
-    while (opened <= MAX_OPEN_FILES) {
-        fds[opened] = coconut_fs_open("/hello.txt", 10);
-        if (fds[opened] == COCONUT_ERROR)
-            break;
-        opened++;
-    }
-    check(opened == MAX_OPEN_FILES, "fs_open: all 16 descriptors available");
-    for (int i = 0; i < opened; i++)
-        coconut_fs_close(fds[i]);
+    check(free_descriptors() == MAX_OPEN_FILES, "fs_open: all 16 descriptors available");
 }
 
 /* -----------------------------------------------------------------------
@@ -248,8 +276,14 @@ static void test_mmap(void)
 
 static void test_capabilities(void)
 {
-    /* Inspect on empty slot */
+    /* The channel capability granted at boot */
+    uint64_t held = ((uint64_t)CAP_CHANNEL << 48) | ((uint64_t)FUZZ_CHANNEL << 16) |
+                    RIGHT_CHANNEL_SEND | RIGHT_CHANNEL_GRANT;
     uint64_t r = coconut_syscall1(SYS_CAP_INSPECT, 0);
+    check(r == held, "cap_inspect: boot-granted channel cap");
+
+    /* Inspect on empty slot */
+    r = coconut_syscall1(SYS_CAP_INSPECT, 15);
     check(r == COCONUT_ERROR, "cap_inspect: empty slot returns error");
 
     /* Inspect on out-of-bounds handle */
@@ -257,11 +291,11 @@ static void test_capabilities(void)
     check(r == COCONUT_ERROR, "cap_inspect: handle=99 rejected");
 
     /* Revoke on empty slot */
-    r = coconut_syscall1(SYS_CAP_REVOKE, 0);
+    r = coconut_syscall1(SYS_CAP_REVOKE, 15);
     check(r == COCONUT_ERROR, "cap_revoke: empty slot returns error");
 
     /* Restrict on empty slot */
-    r = coconut_syscall2(SYS_CAP_RESTRICT, 0, 0);
+    r = coconut_syscall2(SYS_CAP_RESTRICT, 15, 0);
     check(r == COCONUT_ERROR, "cap_restrict: empty slot returns error");
 
     /* Grant to invalid shard */
@@ -269,8 +303,30 @@ static void test_capabilities(void)
     check(r == COCONUT_ERROR, "cap_grant: target_shard=255 rejected");
 
     /* Grant from empty handle */
-    r = coconut_syscall3(SYS_CAP_GRANT, 0, 0, 0xFFFF);
+    r = coconut_syscall3(SYS_CAP_GRANT, 15, FUZZ_SHARD, 0xFFFF);
     check(r == COCONUT_ERROR, "cap_grant: empty handle rejected");
+
+    /* Grant a copy to ourselves; rights are the intersection (SEND only) */
+    uint64_t copy = coconut_syscall3(SYS_CAP_GRANT, 0, FUZZ_SHARD, RIGHT_CHANNEL_SEND);
+    check(copy != COCONUT_ERROR && copy != 0, "cap_grant: copy to self");
+    uint64_t expect = ((uint64_t)CAP_CHANNEL << 48) | ((uint64_t)FUZZ_CHANNEL << 16) |
+                      RIGHT_CHANNEL_SEND;
+    check(coconut_syscall1(SYS_CAP_INSPECT, copy) == expect, "cap_grant: copy has requested rights only");
+
+    /* Restrict is monotonic: rights removed cannot be restored */
+    r = coconut_syscall2(SYS_CAP_RESTRICT, copy, 0);
+    check(r == 0, "cap_restrict: drop all rights");
+    coconut_syscall2(SYS_CAP_RESTRICT, copy, 0xFFFF);
+    check((coconut_syscall1(SYS_CAP_INSPECT, copy) & 0xFFFF) == 0, "cap_restrict: cannot add rights");
+
+    /* A copy without GRANT cannot be granted onwards */
+    r = coconut_syscall3(SYS_CAP_GRANT, copy, FUZZ_SHARD, 0xFFFF);
+    check(r == COCONUT_ERROR, "cap_grant: source without GRANT rejected");
+
+    /* Revoke the copy */
+    r = coconut_syscall1(SYS_CAP_REVOKE, copy);
+    check(r == 0, "cap_revoke: held cap");
+    check(coconut_syscall1(SYS_CAP_INSPECT, copy) == COCONUT_ERROR, "cap_revoke: slot is empty after revoke");
 }
 
 /* -----------------------------------------------------------------------
@@ -304,6 +360,18 @@ static void test_channels(void)
     /* Recv on channel we don't own */
     r = coconut_channel_recv(0, buf, 16);
     check(r == COCONUT_ERROR, "channel_recv: no cap rejected");
+
+    /* Send on the channel we hold SEND for */
+    r = coconut_channel_send(FUZZ_CHANNEL, buf, 4);
+    check(r == 0, "channel_send: held cap accepted");
+
+    /* We hold no RECV right, so this must fail instead of blocking */
+    r = coconut_channel_recv(FUZZ_CHANNEL, buf, 16);
+    check(r == COCONUT_ERROR, "channel_recv: SEND-only cap rejected");
+
+    /* Capability resources are 32-bit: the high bits must not alias channel 2 */
+    r = coconut_syscall3(SYS_CHANNEL_SEND, (1ULL << 32) | FUZZ_CHANNEL, (uint64_t)buf, 4);
+    check(r == COCONUT_ERROR, "channel_send: channel id above 32 bits rejected");
 }
 
 /* -----------------------------------------------------------------------
@@ -409,6 +477,322 @@ static void test_unknown_syscall(void)
 }
 
 /* -----------------------------------------------------------------------
+ * Random syscall campaign
+ *
+ * syzkaller-style: each iteration picks a syscall and builds its arguments
+ * from typed generators that favour boundary values (region edges, length
+ * limits, out-of-range handles, 32-bit truncation) over uniform noise.
+ * Descriptors returned by SYS_FS_OPEN are remembered and reused as arguments.
+ *
+ * The oracle is that nothing breaks: no kernel panic, this shard is never
+ * killed, its text and rodata are unchanged, and no descriptor leaks.
+ * The seed is printed so a failing run can be replayed exactly:
+ *   FUZZ_SEED=<seed> ./scripts/qemu-run.sh
+ * ----------------------------------------------------------------------- */
+
+#ifndef FUZZ_SEED
+#define FUZZ_SEED 0     /* 0 = seed from the TSC at startup */
+#endif
+
+#ifndef FUZZ_ITERS
+#define FUZZ_ITERS 2000
+#endif
+
+/* Base of the heap mapped by test_mmap */
+#define HEAP_BASE 0x100000ULL
+
+/* shard.ld: first byte after text and rodata */
+extern const char __image_rw_start[];
+
+static uint64_t rng_state;
+
+/* xorshift64* */
+static uint64_t rand64(void)
+{
+    rng_state ^= rng_state >> 12;
+    rng_state ^= rng_state << 25;
+    rng_state ^= rng_state >> 27;
+    return rng_state * 0x2545F4914F6CDD1DULL;
+}
+
+static uint64_t below(uint64_t n)
+{
+    return rand64() % n;
+}
+
+/*
+ * Buffers the kernel may read from or write to. Each is two pages and
+ * pointers are drawn from the first page, so any length the kernel
+ * accepts (at most 4096) stays inside the buffer instead of clobbering
+ * this shard's own state. `quiet` is never written and holds only '.',
+ * so SYS_SERIAL_WRITE echoes nothing that could look like a test result.
+ */
+static char scratch[2 * 4096] __attribute__((aligned(4096)));
+static char quiet[2 * 4096] __attribute__((aligned(4096)));
+
+static uint64_t open_fds[MAX_OPEN_FILES];
+static int open_fd_count;
+static int iteration;
+
+/* Pointers that must never be accepted, plus region edges */
+static uint64_t hostile_ptr(void)
+{
+    switch (below(10)) {
+    case 0: return 0;
+    case 1: return 0xFFF;                       /* last byte of null page */
+    case 2: return 0x200000;                    /* unmapped hole */
+    case 3: return 0x7FF000 - 1;                /* just below the stack */
+    case 4: return 0x800000;                    /* stack top */
+    case 5: return 0x0000800000000000ULL;       /* first non-canonical */
+    case 6: return 0xFFFF800000000000ULL;       /* kernel HHDM */
+    case 7: return 0xFFFFFFFF80000000ULL;       /* kernel text */
+    case 8: return ~0ULL - below(4096);         /* wraps on any length */
+    default: return rand64();
+    }
+}
+
+/* Source buffer for SYS_SERIAL_WRITE: echoed to the console */
+static uint64_t echo_ptr(void)
+{
+    if (below(2))
+        return (uint64_t)quiet + below(4096);
+    return hostile_ptr();
+}
+
+/* Source buffer for syscalls that read user memory without echoing it */
+static uint64_t read_ptr(void)
+{
+    switch (below(5)) {
+    case 0: return (uint64_t)quiet + below(4096);
+    case 1: return 0x1000 + below(64);          /* text */
+    case 2: return (uint64_t)__image_rw_start - 1 - below(64); /* rodata end */
+    case 3: return HEAP_BASE + below(4096);
+    default: return hostile_ptr();
+    }
+}
+
+/* Destination buffer for syscalls that write user memory */
+static uint64_t write_ptr(void)
+{
+    switch (below(5)) {
+    case 0: return (uint64_t)scratch + below(4096);
+    case 1: return HEAP_BASE + below(4096);
+    case 2: return 0x1000 + below(64);          /* text: must be rejected */
+    case 3: return (uint64_t)__image_rw_start - 1 - below(64); /* rodata */
+    default: return hostile_ptr();
+    }
+}
+
+static uint64_t pick_len(void)
+{
+    static const uint64_t edges[] = {
+        0, 1, 2, 255, 256, 257, 4095, 4096, 4097,
+        0xFFFFFFFFULL, 0x100000000ULL, ~0ULL,
+    };
+    switch (below(4)) {
+    case 0: return below(4097);
+    case 1: return rand64();
+    default: return edges[below(sizeof(edges) / sizeof(edges[0]))];
+    }
+}
+
+/* Handles, fds, shard IDs, channel and partition IDs */
+static uint64_t pick_index(uint64_t limit)
+{
+    switch (below(6)) {
+    case 0: return limit - 1;
+    case 1: return limit;
+    case 2: return rand64();
+    case 3: return (1ULL << 32) | below(limit); /* truncated to 32 bits? */
+    default: return below(limit);
+    }
+}
+
+/*
+ * Handle for revoke and restrict. Slot 0 holds the boot-granted channel
+ * capability that every grant and send depends on, so it is spared until
+ * the last tenth of the campaign; losing it early ends that coverage.
+ */
+static uint64_t pick_destructive_handle(void)
+{
+    uint64_t h = pick_index(16);
+    if (h == 0 && iteration < FUZZ_ITERS / 10 * 9)
+        h = 1 + below(15);
+    return h;
+}
+
+static uint64_t pick_fd(void)
+{
+    if (open_fd_count > 0 && below(2))
+        return open_fds[below(open_fd_count)];
+    return pick_index(MAX_OPEN_FILES);
+}
+
+static uint64_t pick_rights(void)
+{
+    static const uint64_t edges[] = { 0, 1, 2, 3, 4, 5, 7, 0xFFFF, 0x10000 };
+    if (below(4) == 0)
+        return rand64();
+    return edges[below(sizeof(edges) / sizeof(edges[0]))];
+}
+
+static uint64_t pick_mmap_va(void)
+{
+    switch (below(6)) {
+    case 0: return HEAP_BASE + below(32) * 4096; /* around the heap */
+    case 1: return HEAP_BASE - 4096;             /* extend downwards */
+    case 2: return (uint64_t)__image_rw_start;   /* inside the image */
+    case 3: return 0x7FF000 - below(4) * 4096;   /* up to the stack */
+    case 4: return below(0x800) * 4096;          /* any page */
+    default: return rand64();
+    }
+}
+
+static void track_fd(uint64_t fd)
+{
+    if (open_fd_count < MAX_OPEN_FILES)
+        open_fds[open_fd_count++] = fd;
+}
+
+/*
+ * Every syscall except SYS_EXIT (ends the campaign) and SYS_GPU_PLEDGE
+ * (irreversibly restricts every later call; covered by test_gpu).
+ */
+static const uint64_t syscalls[] = {
+    SYS_SERIAL_WRITE, SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_RESTRICT,
+    SYS_CAP_INSPECT, SYS_CHANNEL_SEND, SYS_CHANNEL_RECV, SYS_FS_OPEN,
+    SYS_FS_READ, SYS_FS_STAT, SYS_FS_CLOSE, SYS_GPU_DMA, SYS_GPU_UNVEIL,
+    SYS_MMAP, SYS_YIELD, SYS_PERF_COUNTER,
+};
+
+/* Unassigned numbers next to real ones, and values that differ only above bit 31 */
+static const uint64_t unknown_syscalls[] = {
+    2, 10, 15, 20, 23, 29, 34, 39, 44, 61, 63, 70, 72, 255,
+    (1ULL << 32) | SYS_SERIAL_WRITE, (1ULL << 63) | SYS_FS_OPEN, ~0ULL,
+};
+
+static uint64_t fuzz_one(void)
+{
+    uint64_t nr;
+    if (below(10) == 0)
+        nr = unknown_syscalls[below(sizeof(unknown_syscalls) / sizeof(unknown_syscalls[0]))];
+    else
+        nr = syscalls[below(sizeof(syscalls) / sizeof(syscalls[0]))];
+
+    uint64_t a0 = rand64(), a1 = rand64(), a2 = rand64();
+    switch (nr) {
+    case SYS_SERIAL_WRITE:
+        a0 = echo_ptr();
+        a1 = pick_len();
+        break;
+    case SYS_CAP_GRANT:
+        /* Favour the boot-granted capability so grants get past the source check */
+        a0 = below(2) ? 0 : pick_index(16);
+        a1 = pick_index(8);
+        a2 = pick_rights();
+        break;
+    case SYS_CAP_REVOKE:
+        a0 = pick_destructive_handle();
+        break;
+    case SYS_CAP_INSPECT:
+        a0 = pick_index(16);
+        break;
+    case SYS_CAP_RESTRICT:
+        a0 = pick_destructive_handle();
+        a1 = pick_rights();
+        break;
+    case SYS_CHANNEL_SEND:
+        a0 = below(2) ? FUZZ_CHANNEL : pick_index(4);
+        a1 = read_ptr();
+        a2 = pick_len();
+        break;
+    case SYS_CHANNEL_RECV:
+        /* This shard holds no RECV right, so a receive can never block */
+        a0 = below(2) ? FUZZ_CHANNEL : pick_index(4);
+        a1 = write_ptr();
+        a2 = pick_len();
+        break;
+    case SYS_FS_OPEN:
+        switch (below(3)) {
+        case 0: a0 = (uint64_t)"/hello.txt"; a1 = 10; break;
+        case 1: a0 = (uint64_t)"/model.bin"; a1 = 10; break;
+        default: a0 = read_ptr(); a1 = pick_len(); break;
+        }
+        break;
+    case SYS_FS_READ:
+        a0 = pick_fd();
+        a1 = write_ptr();
+        a2 = pick_len();
+        break;
+    case SYS_FS_STAT:
+    case SYS_FS_CLOSE:
+        a0 = pick_fd();
+        break;
+    case SYS_GPU_DMA:
+        a0 = pick_index(2);
+        a1 = pick_len();
+        a2 = (pick_len() << 32) | (pick_len() & 0xFFFFFFFF);
+        break;
+    case SYS_GPU_UNVEIL:
+        a0 = pick_len();
+        a1 = pick_len();
+        break;
+    case SYS_MMAP:
+        a0 = pick_mmap_va();
+        a1 = pick_len();
+        break;
+    }
+
+    uint64_t r = coconut_syscall3(nr, a0, a1, a2);
+    if (nr == SYS_FS_OPEN && r != COCONUT_ERROR)
+        track_fd(r);
+    return r;
+}
+
+/* FNV-1a over text and rodata. No syscall may ever write there. */
+static uint64_t image_ro_checksum(void)
+{
+    uint64_t h = 0xCBF29CE484222325ULL;
+    for (const volatile char *p = (const char *)0x1000; p < __image_rw_start; p++) {
+        h ^= (uint8_t)*p;
+        h *= 0x100000001B3ULL;
+    }
+    return h;
+}
+
+static void run_campaign(void)
+{
+    rng_state = FUZZ_SEED ? FUZZ_SEED : coconut_perf_counter();
+    uint64_t seed = rng_state;
+    for (int i = 0; i < (int)sizeof(quiet); i++)
+        quiet[i] = '.';
+
+    uint64_t before = image_ro_checksum();
+    uint64_t accepted = 0;
+    for (iteration = 0; iteration < FUZZ_ITERS; iteration++) {
+        if (fuzz_one() != COCONUT_ERROR)
+            accepted++;
+    }
+    coconut_puts("\n");
+
+    /* Close by number, not by the tracked list: it can hold stale entries */
+    for (uint64_t fd = 0; fd < MAX_OPEN_FILES; fd++)
+        coconut_fs_close(fd);
+
+    struct line l = { .len = 0 };
+    line_str(&l, "fuzz: campaign seed=");
+    line_u64(&l, seed);
+    line_str(&l, " iterations=");
+    line_u64(&l, FUZZ_ITERS);
+    line_str(&l, " accepted=");
+    line_u64(&l, accepted);
+    line_end(&l);
+
+    check(image_ro_checksum() == before, "campaign: text and rodata unchanged");
+    check(free_descriptors() == MAX_OPEN_FILES, "campaign: no descriptors leaked");
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ----------------------------------------------------------------------- */
 
@@ -427,17 +811,19 @@ int main(void)
     test_channels();
     test_perf_counter();
     test_unknown_syscall();
+    run_campaign();
     /* gpu tests last — pledge restricts subsequent syscalls */
     test_gpu();
 
     coconut_puts("\n--- Fuzz Summary ---\n");
-    coconut_puts("fuzz: pass=");
-    print_u64(pass_count);
-    coconut_puts(" fail=");
-    print_u64(fail_count);
-    coconut_puts(" total=");
-    print_u64(pass_count + fail_count);
-    coconut_puts("\n");
+    struct line l = { .len = 0 };
+    line_str(&l, "fuzz: pass=");
+    line_u64(&l, pass_count);
+    line_str(&l, " fail=");
+    line_u64(&l, fail_count);
+    line_str(&l, " total=");
+    line_u64(&l, pass_count + fail_count);
+    line_end(&l);
 
     if (fail_count == 0) {
         coconut_puts("fuzz-syscall: ALL TESTS PASSED\n");

@@ -128,10 +128,16 @@ FUZZ_DIR="$ROOT_DIR/shards/fuzz-syscall"
 FUZZ_OBJ_DIR="$TARGET_DIR/fuzz-syscall"
 mkdir -p "$FUZZ_OBJ_DIR"
 
+# Random campaign: FUZZ_SEED replays a run (default: seed from the TSC),
+# FUZZ_ITERS sets the number of random syscalls
+FUZZ_DEFS=()
+[ -n "${FUZZ_SEED:-}" ] && FUZZ_DEFS+=("-DFUZZ_SEED=${FUZZ_SEED}ULL")
+[ -n "${FUZZ_ITERS:-}" ] && FUZZ_DEFS+=("-DFUZZ_ITERS=${FUZZ_ITERS}")
+
 # SSE disabled — no float math in fuzz shard
 clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
     -mno-sse -mno-sse2 -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic \
-    -O2 -c "$FUZZ_DIR/main.c" -o "$FUZZ_OBJ_DIR/main.o"
+    -O2 ${FUZZ_DEFS[@]+"${FUZZ_DEFS[@]}"} -c "$FUZZ_DIR/main.c" -o "$FUZZ_OBJ_DIR/main.o"
 
 clang -target x86_64-unknown-none-elf -c "$FUZZ_DIR/start.S" \
     -o "$FUZZ_OBJ_DIR/start.o"

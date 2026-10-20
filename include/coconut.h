@@ -53,6 +53,18 @@ typedef unsigned long      size_t;
 #define PLEDGE_GPU_DMA  (1ULL << 2)
 #define PLEDGE_PERF     (1ULL << 3)
 
+/* Capability types (SYS_CAP_INSPECT bits 48..55) */
+#define CAP_CHANNEL  1
+#define CAP_SHARD    2
+#define CAP_MEMORY   3
+#define CAP_GPU_DMA  4
+
+/* Capability rights (SYS_CAP_INSPECT bits 0..15) */
+#define RIGHT_CHANNEL_SEND   (1 << 0)
+#define RIGHT_CHANNEL_RECV   (1 << 1)
+#define RIGHT_CHANNEL_GRANT  (1 << 2)
+#define RIGHT_GPU_DMA_WRITE  (1 << 0)
+
 /* Error sentinel returned by failing syscalls */
 #define COCONUT_ERROR    (~0ULL)
 

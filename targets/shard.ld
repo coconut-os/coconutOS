@@ -25,6 +25,7 @@ SECTIONS
     .rodata : { *(.rodata .rodata.*) } :rodata
 
     . = ALIGN(4096);
+    PROVIDE(__image_rw_start = .);
     .data : { *(.data .data.*) } :data
     .bss : { *(.bss .bss.*) *(COMMON) } :data
 

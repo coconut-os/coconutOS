@@ -40,6 +40,8 @@ jobs:
       - name: Verify boot succeeded
         run: |
           echo "==> Checking boot log..."
+          # Seed first, so a failing random campaign can be replayed with FUZZ_SEED
+          grep "fuzz: campaign" boot.log || true
 
           # Must reach the halt message
           if ! grep -q "all shards completed" boot.log; then
@@ -76,7 +78,7 @@ jobs:
           echo "OK: fuzz shard passed all tests"
 
           echo "==> Boot log summary:"
-          grep -E "(booting|completed|PASS:|FAIL:|Fuzz Summary|Profiling)" boot.log || true
+          grep -E "(booting|completed|PASS:|FAIL:|fuzz: campaign|Fuzz Summary|Profiling)" boot.log || true
           echo "==> CI passed"
 
       - name: Upload boot image

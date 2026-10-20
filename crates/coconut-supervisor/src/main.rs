@@ -347,7 +347,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.4.0 booting...");
+    serial_println!("coconutOS supervisor v0.4.2 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -426,7 +426,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
 
     // Create filesystem demo shard
     static FS_READER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-fs-reader.elf"));
-    shard::create(FS_READER_ELF, "fs-reader", shard::Priority::Normal);
+    let fs_reader = shard::create(FS_READER_ELF, "fs-reader", shard::Priority::Normal);
 
     // Create C FFI demo shard
     static HELLO_C_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-hello-c.elf"));
@@ -462,7 +462,19 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
 
     // Create syscall fuzz shard (boundary torture tests)
     static FUZZ_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-fuzz-syscall.elf"));
-    shard::create(FUZZ_ELF, "fuzz-syscall", shard::Priority::Low);
+    let fuzz = shard::create(FUZZ_ELF, "fuzz-syscall", shard::Priority::Low);
+
+    // Channel 2 gives the fuzz shard a real capability, so random syscalls
+    // reach the grant/restrict/revoke/send success paths. It gets SEND and
+    // GRANT but never RECV: its peer has exited by the time it runs, and a
+    // receive would block forever.
+    channel::init(2, fuzz, fs_reader);
+    capability::grant_to_shard(
+        fuzz,
+        coconut_shared::CAP_CHANNEL,
+        2,
+        coconut_shared::RIGHT_CHANNEL_SEND | coconut_shared::RIGHT_CHANNEL_GRANT,
+    );
 
     serial_println!();
 
