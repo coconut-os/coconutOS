@@ -7,6 +7,7 @@ use core::arch::{asm, naked_asm};
 mod acpi;
 pub mod capability;
 mod channel;
+mod elf;
 mod ext2;
 mod frame;
 mod fs;
@@ -346,7 +347,7 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial::init();
 
     serial_println!();
-    serial_println!("coconutOS supervisor v0.3.6 booting...");
+    serial_println!("coconutOS supervisor v0.4.0 booting...");
 
     // Save PML4 address and mark higher-half as active
     highhalf::set_supervisor_pml4(pml4_phys);
@@ -424,34 +425,24 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     serial_println!();
 
     // Create filesystem demo shard
-    let (start, end) = shard::fs_reader_binary();
-    shard::create(start, end, "fs-reader", shard::Priority::Normal);
+    static FS_READER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-fs-reader.elf"));
+    shard::create(FS_READER_ELF, "fs-reader", shard::Priority::Normal);
 
     // Create C FFI demo shard
-    static HELLO_C_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-hello-c.bin"));
-    let start = HELLO_C_BIN.as_ptr();
-    // Sound: pointer arithmetic stays within the included binary's bounds.
-    let end = unsafe { start.add(HELLO_C_BIN.len()) };
-    shard::create(start, end, "hello-c", shard::Priority::Normal);
+    static HELLO_C_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-hello-c.elf"));
+    shard::create(HELLO_C_ELF, "hello-c", shard::Priority::Normal);
 
     // Create llama-inference shard (transformer forward pass demo)
-    static LLAMA_BIN: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-inference.bin"));
-    let start = LLAMA_BIN.as_ptr();
-    // Sound: pointer arithmetic stays within the included binary's bounds.
-    let end = unsafe { start.add(LLAMA_BIN.len()) };
-    shard::create(start, end, "llama-inference", shard::Priority::Normal);
+    static LLAMA_ELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-inference.elf"));
+    shard::create(LLAMA_ELF, "llama-inference", shard::Priority::Normal);
 
     // Create pipeline-parallel inference shards (2 stages, 1 layer each)
-    static PIPELINE_BIN: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-pipeline.bin"));
+    static PIPELINE_ELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shard-llama-pipeline.elf"));
     {
-        let start = PIPELINE_BIN.as_ptr();
-        // Sound: pointer arithmetic stays within the included binary's bounds.
-        let end = unsafe { start.add(PIPELINE_BIN.len()) };
-
-        let s0 = shard::create(start, end, "llama-pipeline-0", shard::Priority::Normal);
-        let s1 = shard::create(start, end, "llama-pipeline-1", shard::Priority::Normal);
+        let s0 = shard::create(PIPELINE_ELF, "llama-pipeline-0", shard::Priority::Normal);
+        let s1 = shard::create(PIPELINE_ELF, "llama-pipeline-1", shard::Priority::Normal);
 
         // Config pages: stage parameters at VA 0x10000
         let s0_pml4 = unsafe { (*(&raw const shard::SHARDS))[s0].pml4_phys };
@@ -470,12 +461,8 @@ pub extern "C" fn supervisor_main(pml4_phys: u64) -> ! {
     }
 
     // Create syscall fuzz shard (boundary torture tests)
-    static FUZZ_BIN: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/shard-fuzz-syscall.bin"));
-    let start = FUZZ_BIN.as_ptr();
-    // Sound: pointer arithmetic stays within the included binary's bounds.
-    let end = unsafe { start.add(FUZZ_BIN.len()) };
-    shard::create(start, end, "fuzz-syscall", shard::Priority::Low);
+    static FUZZ_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-fuzz-syscall.elf"));
+    shard::create(FUZZ_ELF, "fuzz-syscall", shard::Priority::Low);
 
     serial_println!();
 

@@ -50,4 +50,4 @@ GPU DMA: recv ok, verified
 targets/x86_64-coconut-shard.json
 ```
 
-Built as part of the supervisor's `build.rs`: cargo builds the crate, `llvm-objcopy -O binary` produces a flat binary, which is embedded via `include_bytes!` in the supervisor.
+Built as part of the supervisor's `build.rs`: cargo builds the crate into an ELF, which is embedded via `include_bytes!` in the supervisor.

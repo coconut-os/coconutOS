@@ -24,6 +24,7 @@ Current supervisor modules and their boundaries:
 | `syscall` | MSR setup, dispatch routing | Syscall implementation logic |
 | `channel` | IPC buffers | Capability checks (delegates to capability) |
 | `capability` | Cap tables, grant/revoke | Channel internals |
+| `elf` | ELF64 PT_LOAD parsing on `&[u8]` | Page tables, frame allocation |
 | `ext2` | Ext2 parsing on `&[u8]` | File descriptors, ownership |
 | `fs` | Open file table, fd ops | Ext2 format details (delegates to ext2) |
 | `gdt`, `idt`, `tss` | CPU descriptor tables | Each other |

@@ -282,16 +282,8 @@ pub fn handle_dma(target_part: u64, src_offset: u64, packed_dst_len: u64) -> u64
 // Embedded GPU HAL shard binary (built from coconut-shard-gpu crate)
 // ---------------------------------------------------------------------------
 
-/// Flat binary produced by llvm-objcopy from the coconut-shard-gpu ELF.
-/// Embedded at compile time; loaded into shard code pages at VA 0x1000.
-static GPU_SHARD_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-gpu.bin"));
-
-fn hal_binary() -> (*const u8, *const u8) {
-    let start = GPU_SHARD_BIN.as_ptr();
-    // Sound: pointer arithmetic within the bounds of the static slice
-    let end = unsafe { start.add(GPU_SHARD_BIN.len()) };
-    (start, end)
-}
+/// GPU HAL shard ELF built from the coconut-shard-gpu crate.
+static GPU_SHARD_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shard-gpu.elf"));
 
 // ---------------------------------------------------------------------------
 // GPU partitioning
@@ -523,7 +515,6 @@ pub fn init() {
     prng_seed();
 
     // Create one HAL shard per partition
-    let (start, end) = hal_binary();
     let count = unsafe { *(&raw const PARTITION_COUNT) };
     // Track shard IDs for capability setup
     let mut shard_ids = [usize::MAX; MAX_GPU_PARTITIONS];
@@ -547,7 +538,7 @@ pub fn init() {
             mmio_vaddr
         );
 
-        let id = shard::create(start, end, "gpu-hal", Priority::High);
+        let id = shard::create(GPU_SHARD_ELF, "gpu-hal", Priority::High);
         let pml4_phys = unsafe { (*(&raw const shard::SHARDS))[id].pml4_phys };
 
         create_config_page(id, pml4_phys, partition, vram_vaddr, mmio_vaddr);

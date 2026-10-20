@@ -67,7 +67,7 @@ On first build, `rustup` installs the nightly toolchain and components from `rus
 ### Expected Output
 
 ```
-coconutOS supervisor v0.3.6 booting...
+coconutOS supervisor v0.4.0 booting...
 Higher-half: page tables built, CR3 switched
 ...
 CR4: OSFXSR + TSD set
@@ -94,7 +94,7 @@ ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
  0        12            4523         8        45  gpu-hal
  ...
 
-coconutOS supervisor v0.3.6: all shards completed.
+coconutOS supervisor v0.4.0: all shards completed.
 Halting.
 ```
 
@@ -136,7 +136,7 @@ coconutOS/
 │   └── llama-pipeline/        # Pipeline parallelism shard (start.S + main.c)
 ├── targets/
 │   ├── x86_64-coconut-shard.json  # Custom target for Rust shards
-│   └── shard.ld               # Shard linker script (flat binary at VA 0x1000)
+│   └── shard.ld               # Shard linker script (ELF segments at VA 0x1000)
 ├── docs/                      # Architecture, build, debugging docs
 ├── scripts/
 │   ├── qemu-run.sh            # One-command build + QEMU launch
@@ -152,7 +152,7 @@ coconutOS/
 
 | Region | Virtual Address | Purpose |
 |--------|----------------|---------|
-| Shard code | `0x1000+` | User-mode shard binary (R+X) |
+| Shard image | `0x1000+` | User-mode ELF: text (R+X), rodata (R), data+bss (R+W+NX) |
 | Shard data | `0x100000+` | mmap'd heap (R+W+NX) |
 | Shard stack | `0x7FF000` | Single 4 KiB page (R+W+NX) |
 | HHDM | `0xFFFF800000000000` | Physical-to-virtual conversion |
@@ -190,7 +190,7 @@ coconutOS/
 | GPU Bring-Up (1.1-1.6) | Complete |
 | Multi-Shard GPU Isolation (2.1-2.6) | Complete |
 | Inference Stack (3.1-3.6) | Complete |
-| Hardening & Multi-Vendor | Planned |
+| Hardening & Multi-Vendor (4.0-4.6) | In progress |
 
 See [.claude/ROADMAP.md](.claude/ROADMAP.md) for detailed milestones.
 

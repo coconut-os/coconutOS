@@ -354,38 +354,45 @@ fn main() {
         model_indirect_count
     );
 
-    // Copy GPU shard flat binary into OUT_DIR for include_bytes!
-    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_GPU_BIN") {
-        let dst = Path::new(&out_dir).join("shard-gpu.bin");
-        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-gpu.bin");
+    // Copy GPU HAL shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_GPU_ELF") {
+        let dst = Path::new(&out_dir).join("shard-gpu.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-gpu.elf");
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
-    // Copy C shard flat binary into OUT_DIR for include_bytes!
-    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_HELLO_C_BIN") {
-        let dst = Path::new(&out_dir).join("shard-hello-c.bin");
-        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-hello-c.bin");
+    // Copy fs-reader shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_FS_READER_ELF") {
+        let dst = Path::new(&out_dir).join("shard-fs-reader.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-fs-reader.elf");
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
-    // Copy llama-inference shard flat binary into OUT_DIR for include_bytes!
-    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_LLAMA_BIN") {
-        let dst = Path::new(&out_dir).join("shard-llama-inference.bin");
-        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-llama-inference.bin");
+    // Copy C demo shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_HELLO_C_ELF") {
+        let dst = Path::new(&out_dir).join("shard-hello-c.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-hello-c.elf");
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
-    // Copy llama-pipeline shard flat binary into OUT_DIR for include_bytes!
-    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_LLAMA_PIPELINE_BIN") {
-        let dst = Path::new(&out_dir).join("shard-llama-pipeline.bin");
-        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-llama-pipeline.bin");
+    // Copy llama-inference shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_LLAMA_ELF") {
+        let dst = Path::new(&out_dir).join("shard-llama-inference.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-llama-inference.elf");
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 
-    // Copy fuzz-syscall shard flat binary into OUT_DIR for include_bytes!
-    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_FUZZ_BIN") {
-        let dst = Path::new(&out_dir).join("shard-fuzz-syscall.bin");
-        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-fuzz-syscall.bin");
+    // Copy llama-pipeline shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_LLAMA_PIPELINE_ELF") {
+        let dst = Path::new(&out_dir).join("shard-llama-pipeline.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-llama-pipeline.elf");
+        println!("cargo::rerun-if-changed={}", shard_path);
+    }
+
+    // Copy fuzz-syscall shard ELF into OUT_DIR for include_bytes!
+    if let Ok(shard_path) = std::env::var("COCONUT_SHARD_FUZZ_ELF") {
+        let dst = Path::new(&out_dir).join("shard-fuzz-syscall.elf");
+        std::fs::copy(&shard_path, &dst).expect("failed to copy shard-fuzz-syscall.elf");
         println!("cargo::rerun-if-changed={}", shard_path);
     }
 

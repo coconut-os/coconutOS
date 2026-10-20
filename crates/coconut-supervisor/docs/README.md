@@ -75,14 +75,14 @@ MMIO devices mapped at `0xFFFFFFFFC0000000+` (PDPT_kern[511]).
 
 | Region | Virtual Address | Permissions |
 |--------|----------------|-------------|
-| Code | `0x1000+` | R+X (multi-page) |
+| Image | `0x1000+` | ELF segments: text R+X, rodata R+NX, data+bss R+W+NX |
 | Data (mmap) | `0x100000+` | R+W+NX |
 | GPU BARs | `0x800000+` | R+W+NX (HAL shards only, ASLR'd) |
 | Stack | `0x7FF000` | R+W+NX (single 4 KiB page) |
 
 ## Shard Lifecycle
 
-1. **Create**: Allocate page tables, code frames, stack frame. Map code at `0x1000+` (R+X, multi-page), stack at `0x7FF000` (R+W+NX). Copy user code. Prepare synthetic kernel stack frame pointing to `shard_first_entry`.
+1. **Create**: Allocate page tables, image frames, stack frame. Map ELF segments at `0x1000+` (text R+X, rodata R+NX, data+bss R+W+NX), stack at `0x7FF000` (R+W+NX). Copy segment contents (bss stays zeroed). Prepare synthetic kernel stack frame pointing to `shard_first_entry`.
 2. **Schedule**: Round-robin across 4 priority levels. `context_switch` swaps kernel RSP. Side-channel state cleared between shards (FPU/SSE, debug registers, IBPB).
 3. **First run**: `context_switch` returns into `shard_first_entry` trampoline, which sets user DS and executes `sysretq` to enter ring 3 at `0x1000`.
 4. **Preemption**: PIT timer (vector 32) fires ~1 kHz. User-mode ISR saves GP regs + FXSAVE (SSE state), calls `timer_preempt`, FXRSTOR + restores GP regs, iretq.

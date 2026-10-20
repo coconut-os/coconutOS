@@ -95,10 +95,10 @@ The fault handler prints CR2 (faulting address) and the error code. Error code b
 | 4 | Instruction fetch (NX violation) |
 
 Common causes:
-- Shard accessing unmapped memory (only code, mmap'd data, and stack pages are mapped)
-- Writing to a read-only page (code pages at `0x1000+` are R+X)
+- Shard accessing unmapped memory (only the ELF image, mmap'd data, and stack pages are mapped)
+- Writing to a read-only page (image text is R+X, rodata is R+NX)
 - Executing from a non-executable page (stack at `0x7FF000` is R+W+NX, data at `0x100000+` is R+W+NX)
-- **BSS in code region**: C shards compiled as flat binaries have no separate BSS segment. Mutable globals land in the code region (R+X), causing page faults on write. Move all mutable state to stack or mmap'd heap.
+- **Section outside shard.ld**: the supervisor maps only the text, rodata, and data PT_LOAD segments defined in `targets/shard.ld`. Check segments with `llvm-readobj --program-headers shard.elf`.
 
 ### Float Math Corruption After Preemption
 
@@ -141,10 +141,10 @@ rust-objdump -d --no-show-raw-insn \
 
 ### Shard binaries
 
-C shard flat binaries can be disassembled with:
+Shard ELFs (in `target/<shard>/`) can be disassembled with:
 
 ```bash
-llvm-objdump -d -m x86-64 --no-show-raw-insn shard.bin
+llvm-objdump -d --no-show-raw-insn shard.elf
 ```
 
 ## Memory Layout Quick Reference
@@ -163,7 +163,7 @@ llvm-objdump -d -m x86-64 --no-show-raw-insn shard.bin
 
 | Virtual Address | Maps To | Purpose |
 |----------------|---------|---------|
-| `0x0000000000001000+` | Shard code frames | User code (R+X, multi-page) |
+| `0x0000000000001000+` | Shard image frames | ELF text (R+X), rodata (R+NX), data+bss (R+W+NX) |
 | `0x0000000000100000+` | Shard data frames | mmap'd heap (R+W+NX) |
 | `0x00000000007FF000` | Shard stack frame | User stack (R+W+NX) |
 | `0x0000000000800000+` | GPU BAR frames | GPU VRAM/MMIO (HAL shards, ASLR'd) |

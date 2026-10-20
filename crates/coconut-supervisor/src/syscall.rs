@@ -277,7 +277,7 @@ extern "C" fn syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 }
 
 /// Validate that a user buffer [ptr, ptr+len) lies entirely within
-/// allowed user-space regions: code [0x1000, code_end), data [data_start, data_end),
+/// allowed user-space regions: image [0x1000, image_end), data [data_start, data_end),
 /// or stack [0x7FF000, 0x800000).
 pub fn validate_read(ptr: u64, len: u64) -> bool {
     validate_user_read_buf(ptr, len)
@@ -293,8 +293,8 @@ fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     }
     let id = shard::current_shard();
     let s = unsafe { &(*(&raw const shard::SHARDS))[id] };
-    // Code region (variable size)
-    if ptr >= 0x1000 && end <= s.code_end_vaddr {
+    // ELF image (all segments, contiguous)
+    if ptr >= 0x1000 && end <= s.image_end {
         return true;
     }
     // Data region (mmap'd)
@@ -308,8 +308,8 @@ fn validate_user_read_buf(ptr: u64, len: u64) -> bool {
     false
 }
 
-/// Validate that a user buffer for writing lies in a writable region:
-/// data [data_start, data_end) or stack [0x7FF000, 0x800000).
+/// Validate that a user buffer for writing lies in a writable region: image
+/// data+bss, data [data_start, data_end), or stack [0x7FF000, 0x800000).
 pub fn validate_write(ptr: u64, len: u64) -> bool {
     validate_user_write_buf(ptr, len)
 }
@@ -324,6 +324,10 @@ fn validate_user_write_buf(ptr: u64, len: u64) -> bool {
     }
     let id = shard::current_shard();
     let s = unsafe { &(*(&raw const shard::SHARDS))[id] };
+    // Image data+bss segment
+    if s.image_data_start != 0 && ptr >= s.image_data_start && end <= s.image_data_end {
+        return true;
+    }
     // Data region (mmap'd, writable)
     if s.data_start != 0 && ptr >= s.data_start && end <= s.data_end {
         return true;

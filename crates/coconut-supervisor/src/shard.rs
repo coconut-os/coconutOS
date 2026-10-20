@@ -1,9 +1,10 @@
 //! Shard lifecycle: create and destroy isolated user-mode address spaces.
 //!
 //! A shard is an isolated execution context with its own page tables (PML4),
-//! user-mode code, and stack. The supervisor copies its upper-half PML4 entries
+//! a user-mode ELF image, and stack. The supervisor copies its upper-half PML4 entries
 //! into the shard so syscalls/interrupts can access kernel code.
 
+use crate::elf;
 use crate::frame;
 use crate::highhalf;
 use crate::vmm::{self, PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
@@ -12,7 +13,7 @@ use crate::vmm::{self, PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
 /// 256 frames = 1 MiB — sufficient for inference shards with model + activations.
 const MAX_SHARD_FRAMES: usize = 256;
 
-/// Virtual address where the shard code is mapped.
+/// Virtual address where the shard image starts (also its entry point).
 pub const SHARD_CODE_VADDR: u64 = 0x1000;
 
 /// Virtual address where the shard stack page is mapped (top of stack at 0x800000).
@@ -75,8 +76,12 @@ pub struct ShardDescriptor {
     pub vram_unveil_offset: u64,
     /// Unveiled VRAM size (0 = not yet unveiled, DMA unrestricted).
     pub vram_unveil_size: u64,
-    /// Virtual address past the last code page (default: 0x2000 for single-page).
-    pub code_end_vaddr: u64,
+    /// Virtual address past the last image page. [SHARD_CODE_VADDR, image_end) is fully mapped.
+    pub image_end: u64,
+    /// Start of the image's writable data+bss segment (0 = none).
+    pub image_data_start: u64,
+    /// End of the image's writable data+bss segment (exclusive).
+    pub image_data_end: u64,
     /// Start of mmap'd data region (0 = no data region).
     pub data_start: u64,
     /// End of mmap'd data region (exclusive).
@@ -116,7 +121,9 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
         gpu_pledge: u64::MAX,
         vram_unveil_offset: 0,
         vram_unveil_size: 0,
-        code_end_vaddr: SHARD_CODE_VADDR + 0x1000,
+        image_end: SHARD_CODE_VADDR,
+        image_data_start: 0,
+        image_data_end: 0,
         data_start: 0,
         data_end: 0,
         name: [0; 20],
@@ -131,85 +138,14 @@ pub static mut SHARDS: [ShardDescriptor; MAX_SHARDS] = [const {
 /// Currently running shard ID (or usize::MAX if none).
 pub static mut CURRENT_SHARD: usize = usize::MAX;
 
-// ---------------------------------------------------------------------------
-// Embedded shard binary — filesystem demo shard
-// ---------------------------------------------------------------------------
-
-// fs_reader: Open /hello.txt, read contents, print via serial, close, exit.
-core::arch::global_asm!(
-    ".section .rodata",
-    ".balign 16",
-    ".global _fs_reader_start",
-    ".global _fs_reader_end",
-    "_fs_reader_start:",
-
-    "mov rsp, 0x800000",
-
-    // SYS_FS_OPEN("/hello.txt", 10) -> fd in rax
-    "lea rdi, [rip + 1f]",          // path in code page
-    "mov rsi, 10",                  // path_len = 10 ("/hello.txt")
-    "mov rax, 30",                  // SYS_FS_OPEN
-    "syscall",
-    "mov r12, rax",                 // save fd (r12 preserved across syscalls)
-
-    // SYS_FS_READ(fd, 0x7FFF00, 256) -> bytes_read in rax
-    "mov rdi, r12",                 // fd
-    "mov rsi, 0x7FFF00",            // buffer in stack page
-    "mov rdx, 256",                 // max_len
-    "mov rax, 31",                  // SYS_FS_READ
-    "syscall",
-    "mov r13, rax",                 // save bytes_read
-
-    // SYS_SERIAL_WRITE(0x7FFF00, bytes_read) -> prints file contents
-    "mov rdi, 0x7FFF00",            // buf
-    "mov rsi, r13",                 // len = bytes_read
-    "mov rax, 1",                   // SYS_SERIAL_WRITE
-    "syscall",
-
-    // SYS_FS_CLOSE(fd)
-    "mov rdi, r12",                 // fd
-    "mov rax, 33",                  // SYS_FS_CLOSE
-    "syscall",
-
-    // SYS_EXIT(0)
-    "xor edi, edi",
-    "mov rax, 0",
-    "syscall",
-    "2: hlt",
-    "jmp 2b",
-
-    // String data
-    "1: .ascii \"/hello.txt\"",
-
-    "_fs_reader_end:",
-);
-
-extern "C" {
-    static _fs_reader_start: u8;
-    static _fs_reader_end: u8;
-}
-
-/// Get the fs-reader shard binary (start, end) pointers.
-pub fn fs_reader_binary() -> (*const u8, *const u8) {
-    (
-        (&raw const _fs_reader_start) as *const u8,
-        (&raw const _fs_reader_end) as *const u8,
-    )
-}
-
 /// Get the current shard ID.
 pub fn current_shard() -> usize {
     unsafe { *(&raw const CURRENT_SHARD) }
 }
 
-/// Create a new shard with the given binary and priority.
+/// Create a new shard from an embedded ELF image with the given priority.
 /// Returns the shard ID (index).
-pub fn create(
-    binary_start: *const u8,
-    binary_end: *const u8,
-    name: &str,
-    priority: Priority,
-) -> usize {
+pub fn create(image: &[u8], name: &str, priority: Priority) -> usize {
     // Find a free slot
     let id = unsafe {
         let shards = &*(&raw const SHARDS);
@@ -250,32 +186,82 @@ pub fn create(
         }
     }
 
-    // 3. Allocate code frames, copy shard binary, map at 0x1000+ (R+X, USER)
-    let code_size = binary_end as usize - binary_start as usize;
-    let code_pages = (code_size + 4095) / 4096;
-    let code_end = SHARD_CODE_VADDR + (code_pages as u64) * 4096;
+    // 3. Map each PT_LOAD segment with the permissions the linker gave it.
+    //    Segments must tile [SHARD_CODE_VADDR, image_end) without gaps:
+    //    buffer validation accepts that whole range, so a hole would let a
+    //    syscall reach an unmapped page from kernel mode.
+    let elf = elf::parse(image);
+    assert!(
+        elf.entry == SHARD_CODE_VADDR,
+        "shard: entry point must be SHARD_CODE_VADDR"
+    );
 
-    for page_idx in 0..code_pages {
-        let code_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc code frame");
-        shard.allocated_frames[shard.frame_count] = code_phys;
-        shard.frame_count += 1;
+    let mut image_end = SHARD_CODE_VADDR;
+    for seg in &elf.segments[..elf.segment_count] {
+        assert!(
+            seg.vaddr == image_end,
+            "shard: segments not contiguous and page-aligned"
+        );
+        assert!(
+            !(seg.writable && seg.executable),
+            "shard: segment is both W and X"
+        );
+        // vaddr == image_end <= SHARD_STACK_VADDR, so the subtraction cannot underflow
+        assert!(
+            seg.mem_size <= SHARD_STACK_VADDR - seg.vaddr,
+            "shard: image overlaps stack"
+        );
+        let pages = seg.mem_size.div_ceil(4096);
+        let seg_end = seg.vaddr + pages * 4096;
 
-        // Copy up to 4096 bytes for this page
-        let page_start = page_idx * 4096;
-        let copy_len = (code_size - page_start).min(4096);
-        let code_dest = vmm::phys_to_virt(code_phys);
-        unsafe {
-            core::ptr::copy_nonoverlapping(binary_start.add(page_start), code_dest, copy_len);
+        let mut flags = PTE_USER;
+        if seg.writable {
+            assert!(
+                shard.image_data_start == 0,
+                "shard: more than one writable segment"
+            );
+            shard.image_data_start = seg.vaddr;
+            shard.image_data_end = seg_end;
+            flags |= PTE_WRITABLE;
+        }
+        if !seg.executable {
+            flags |= PTE_NO_EXECUTE;
         }
 
-        vmm::map_4k(
-            pml4_phys,
-            SHARD_CODE_VADDR + (page_idx as u64) * 4096,
-            code_phys,
-            PTE_USER,
+        for page_idx in 0..pages as usize {
+            let phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc image frame");
+            shard.allocated_frames[shard.frame_count] = phys;
+            shard.frame_count += 1;
+
+            // Copy the file-backed part of this page; the rest stays zero (.bss).
+            let page_start = page_idx * 4096;
+            if page_start < seg.file_size {
+                let copy_len = (seg.file_size - page_start).min(4096);
+                let src = &image[seg.file_offset + page_start..][..copy_len];
+                // Sound: phys is a freshly allocated 4 KiB frame reachable via
+                // the HHDM, and copy_len <= 4096.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src.as_ptr(), vmm::phys_to_virt(phys), copy_len);
+                }
+            }
+
+            vmm::map_4k(pml4_phys, seg.vaddr + (page_idx as u64) * 4096, phys, flags);
+        }
+
+        crate::serial_println!(
+            "Shard {}: segment {:#x}-{:#x} ({})",
+            id,
+            seg.vaddr,
+            seg_end,
+            match (seg.writable, seg.executable) {
+                (false, true) => "R+X",
+                (false, false) => "R+NX",
+                _ => "R+W+NX",
+            }
         );
+        image_end = seg_end;
     }
-    shard.code_end_vaddr = code_end;
+    shard.image_end = image_end;
 
     // 4. Allocate stack frame (zeroed), map at 0x7FF000 (R+W, USER, NX)
     let stack_phys = frame::alloc_frame_zeroed().expect("shard: failed to alloc stack frame");
@@ -304,9 +290,8 @@ pub fn create(
     shard.blocked_on_channel = usize::MAX;
 
     crate::serial_println!(
-        "Shard {}: code at virt {:#x} (R+X), stack at virt {:#x} (R+W+NX)",
+        "Shard {}: stack at virt {:#x} (R+W+NX)",
         id,
-        SHARD_CODE_VADDR,
         SHARD_STACK_VADDR
     );
 
@@ -334,7 +319,7 @@ pub fn handle_sys_exit(exit_code: u64) {
 /// Handle SYS_MMAP: allocate data pages in the shard's address space.
 ///
 /// Maps `num_pages` frames at [va_start, va_start + num_pages * 4096) with
-/// USER | WRITABLE | NX. Valid range: [code_end_vaddr, 0x7FF000).
+/// USER | WRITABLE | NX. Valid range: [image_end, 0x7FF000).
 /// Returns 0 on success, u64::MAX on error.
 pub fn handle_sys_mmap(va_start: u64, num_pages: u64) -> u64 {
     let id = current_shard();
@@ -353,8 +338,8 @@ pub fn handle_sys_mmap(va_start: u64, num_pages: u64) -> u64 {
     let size = num_pages * 4096;
     let va_end = va_start.checked_add(size).unwrap_or(u64::MAX);
 
-    // Must be between code end and stack
-    if va_start < shard.code_end_vaddr || va_end > SHARD_STACK_VADDR {
+    // Must be between image end and stack
+    if va_start < shard.image_end || va_end > SHARD_STACK_VADDR {
         crate::serial_println!("Shard {}: mmap: range {:#x}-{:#x} out of bounds", id, va_start, va_end);
         return u64::MAX;
     }

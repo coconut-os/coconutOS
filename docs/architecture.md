@@ -846,7 +846,7 @@ Shard Virtual Address Space (implemented):
 ├───────────────────────┤
 │ Config page           │ R (HAL shards only, VA 0x4000)
 ├───────────────────────┤
-│ Code (multi-page)    │ R+X (W^X enforced)
+│ ELF image            │ text R+X, rodata R, data+bss R+W+NX
 ├───────────────────────┤ 0x0000_1000
 │ (unmapped null guard) │
 └───────────────────────┘ 0x0000_0000
@@ -1208,7 +1208,7 @@ uint64_t coconut_channel_recv(uint64_t ch, void *buf, uint64_t max_len);
 // Capabilities, GPU pledge/unveil, GPU DMA — also available
 ```
 
-C shards are compiled with clang (freestanding x86-64), linked as flat binaries via `targets/shard.ld`, and embedded into the supervisor.
+C shards are compiled with clang (freestanding x86-64), linked as ELF executables via `targets/shard.ld`, and embedded into the supervisor. The supervisor maps each PT_LOAD segment with its own permissions (W^X), so shards may use initialized and zeroed globals.
 
 ### 11.4 Debugging and Profiling Tools
 

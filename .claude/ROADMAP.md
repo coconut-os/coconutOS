@@ -44,10 +44,11 @@ End-to-end LLM inference on coconutOS.
 - [x] **3.5** coconut-trace, coconut-prof tooling
 - [x] **3.6** Benchmark: inference latency vs. native baseline
 
-## Hardening & Multi-Vendor — Planned
+## Hardening & Multi-Vendor — In Progress
 
 Production hardening, additional GPU vendor support.
 
+- [x] **4.0** Shard ELF segments (W^X text/rodata/data+bss, real globals in shards)
 - [ ] **4.1** Security audit of supervisor (external)
 - [ ] **4.2** Fuzzing campaign (syzkaller-style for supervisor syscalls)
 - [ ] **4.3** NVIDIA GPU HAL shard (Hopper/Blackwell)

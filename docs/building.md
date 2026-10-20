@@ -27,7 +27,7 @@ coconutOS/
 │   └── llama-pipeline/     # Pipeline parallelism shard (start.S + main.c)
 └── targets/
     ├── x86_64-coconut-shard.json  # Custom target for Rust shards
-    └── shard.ld            # Shard linker script (flat binary at VA 0x1000)
+    └── shard.ld            # Shard linker script (ELF segments at VA 0x1000)
 ```
 
 | Crate | Target | Role |
@@ -88,13 +88,12 @@ clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib -nostdinc \
     -mno-mmx -mno-red-zone -fno-stack-protector -fno-pic -O2 \
     -I include -c shards/llama-inference/main.c -o llama.o
 
-# Link with start.S entry stub, produce flat binary
+# Link with start.S entry stub
 clang -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
     -Wl,-Ttargets/shard.ld -o shard.elf start.o main.o
-llvm-objcopy -O binary shard.elf shard.bin
 ```
 
-The resulting flat binaries are embedded into the supervisor via `include_bytes!` in `build.rs`. Environment variables (`COCONUT_SHARD_HELLO_C_BIN`, `COCONUT_SHARD_LLAMA_BIN`) tell the supervisor build where to find them.
+The resulting ELFs are embedded into the supervisor via `include_bytes!` in `build.rs`. Environment variables (`COCONUT_SHARD_<NAME>_ELF`, e.g. `COCONUT_SHARD_HELLO_C_ELF`) tell the supervisor build where to find them.
 
 ## Build Artifacts
 
@@ -103,14 +102,16 @@ target/
 ├── x86_64-unknown-none/release/
 │   ├── coconut-supervisor          # ELF binary (loaded by bootloader)
 │   └── build/coconut-supervisor-*/out/
-│       ├── shard-gpu-hal.bin       # GPU HAL shard (Rust, flat binary)
-│       ├── shard-hello-c.bin       # C demo shard (flat binary)
-│       ├── shard-llama-inference.bin  # Inference shard (flat binary)
-│       └── shard-llama-pipeline.bin   # Pipeline shard (flat binary)
+│       ├── shard-gpu.elf           # GPU HAL shard (Rust)
+│       ├── shard-fs-reader.elf     # Filesystem demo shard (asm)
+│       ├── shard-hello-c.elf       # C demo shard
+│       ├── shard-llama-inference.elf  # Inference shard
+│       ├── shard-llama-pipeline.elf   # Pipeline shard
+│       └── shard-fuzz-syscall.elf  # Syscall boundary tests
 ├── x86_64-unknown-uefi/release/
 │   └── coconut-boot.efi           # PE32+ UEFI application
 └── x86_64-coconut-shard/release/
-    └── coconut-shard-gpu           # GPU HAL shard ELF (before objcopy)
+    └── coconut-shard-gpu           # GPU HAL shard ELF
 ```
 
 The `qemu-run.sh` script packages the bootloader and supervisor into a FAT32 disk image at `target/coconut-boot.img`.
@@ -156,7 +157,7 @@ rustflags = [
 ]
 ```
 
-Rust shards use a custom target (`targets/x86_64-coconut-shard.json`) compiled into flat binaries at VA `0x1000`. The custom target requires `-Zjson-target-spec` on the cargo command line.
+Rust shards use a custom target (`targets/x86_64-coconut-shard.json`) linked as ELF executables at VA `0x1000`. The custom target requires `-Zjson-target-spec` on the cargo command line.
 
 ## Rust Toolchain (`rust-toolchain.toml`)
 

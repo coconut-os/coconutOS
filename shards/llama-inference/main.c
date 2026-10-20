@@ -8,8 +8,8 @@
  * Model format: 7×i32 header + flat f32 weight arrays (llama2.c checkpoint).
  * Config: dim=32, hidden_dim=64, n_layers=2, n_heads=4, vocab=32.
  *
- * All mutable state lives on the stack (not BSS) because shard code pages
- * are mapped R+X. The heap allocator state is passed by pointer.
+ * All mutable state lives on the stack; the heap allocator state is passed
+ * by pointer.
  */
 
 #include "../../include/coconut.h"

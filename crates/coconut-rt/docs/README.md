@@ -77,4 +77,4 @@ coconut_rt::println!("partition {}: {} CUs", config.partition_id, config.cu_coun
 targets/x86_64-coconut-shard.json
 ```
 
-Compiled with `-Zjson-target-spec`, then `llvm-objcopy -O binary` to produce a flat binary embedded in the supervisor via `include_bytes!`.
+Compiled with `-Zjson-target-spec`, producing an ELF embedded in the supervisor via `include_bytes!`.

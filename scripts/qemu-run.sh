@@ -45,21 +45,27 @@ if [ ! -f "$SHARD_ELF" ]; then
     exit 1
 fi
 
-# Convert ELF to flat binary for embedding in the supervisor
-LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin/llvm-objcopy"
-if [ ! -f "$LLVM_OBJCOPY" ]; then
-    # Fallback to PATH
-    LLVM_OBJCOPY="llvm-objcopy"
-fi
-"$LLVM_OBJCOPY" -O binary "$SHARD_ELF" "$TARGET_DIR/shard-gpu.bin"
+export COCONUT_SHARD_GPU_ELF="$SHARD_ELF"
 
-export COCONUT_SHARD_GPU_BIN="$TARGET_DIR/shard-gpu.bin"
-
-# Locate rust-lld from the Rust toolchain (same sysroot as llvm-objcopy)
+# Locate rust-lld from the Rust toolchain
 RUST_LLD="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin/rust-lld"
 if [ ! -f "$RUST_LLD" ]; then
     RUST_LLD="rust-lld"
 fi
+
+echo "==> Building fs-reader shard..."
+FS_READER_DIR="$ROOT_DIR/shards/fs-reader"
+FS_READER_OBJ_DIR="$TARGET_DIR/fs-reader"
+mkdir -p "$FS_READER_OBJ_DIR"
+
+clang -target x86_64-unknown-none-elf -c "$FS_READER_DIR/start.S" \
+    -o "$FS_READER_OBJ_DIR/start.o"
+
+"$RUST_LLD" -flavor gnu -T "$ROOT_DIR/targets/shard.ld" --gc-sections \
+    "$FS_READER_OBJ_DIR/start.o" \
+    -o "$FS_READER_OBJ_DIR/fs-reader.elf"
+
+export COCONUT_SHARD_FS_READER_ELF="$FS_READER_OBJ_DIR/fs-reader.elf"
 
 echo "==> Building hello-c shard..."
 HELLO_C_DIR="$ROOT_DIR/shards/hello-c"
@@ -77,10 +83,7 @@ clang -target x86_64-unknown-none-elf -c "$HELLO_C_DIR/start.S" \
     "$HELLO_C_OBJ_DIR/start.o" "$HELLO_C_OBJ_DIR/main.o" \
     -o "$HELLO_C_OBJ_DIR/hello-c.elf"
 
-"$LLVM_OBJCOPY" -O binary "$HELLO_C_OBJ_DIR/hello-c.elf" \
-    "$TARGET_DIR/shard-hello-c.bin"
-
-export COCONUT_SHARD_HELLO_C_BIN="$TARGET_DIR/shard-hello-c.bin"
+export COCONUT_SHARD_HELLO_C_ELF="$HELLO_C_OBJ_DIR/hello-c.elf"
 
 echo "==> Building llama-inference shard..."
 LLAMA_DIR="$ROOT_DIR/shards/llama-inference"
@@ -99,10 +102,7 @@ clang -target x86_64-unknown-none-elf -c "$LLAMA_DIR/start.S" \
     "$LLAMA_OBJ_DIR/start.o" "$LLAMA_OBJ_DIR/main.o" \
     -o "$LLAMA_OBJ_DIR/llama-inference.elf"
 
-"$LLVM_OBJCOPY" -O binary "$LLAMA_OBJ_DIR/llama-inference.elf" \
-    "$TARGET_DIR/shard-llama-inference.bin"
-
-export COCONUT_SHARD_LLAMA_BIN="$TARGET_DIR/shard-llama-inference.bin"
+export COCONUT_SHARD_LLAMA_ELF="$LLAMA_OBJ_DIR/llama-inference.elf"
 
 echo "==> Building llama-pipeline shard..."
 PIPELINE_DIR="$ROOT_DIR/shards/llama-pipeline"
@@ -121,10 +121,7 @@ clang -target x86_64-unknown-none-elf -c "$PIPELINE_DIR/start.S" \
     "$PIPELINE_OBJ_DIR/start.o" "$PIPELINE_OBJ_DIR/main.o" \
     -o "$PIPELINE_OBJ_DIR/llama-pipeline.elf"
 
-"$LLVM_OBJCOPY" -O binary "$PIPELINE_OBJ_DIR/llama-pipeline.elf" \
-    "$TARGET_DIR/shard-llama-pipeline.bin"
-
-export COCONUT_SHARD_LLAMA_PIPELINE_BIN="$TARGET_DIR/shard-llama-pipeline.bin"
+export COCONUT_SHARD_LLAMA_PIPELINE_ELF="$PIPELINE_OBJ_DIR/llama-pipeline.elf"
 
 echo "==> Building fuzz-syscall shard..."
 FUZZ_DIR="$ROOT_DIR/shards/fuzz-syscall"
@@ -143,10 +140,7 @@ clang -target x86_64-unknown-none-elf -c "$FUZZ_DIR/start.S" \
     "$FUZZ_OBJ_DIR/start.o" "$FUZZ_OBJ_DIR/main.o" \
     -o "$FUZZ_OBJ_DIR/fuzz-syscall.elf"
 
-"$LLVM_OBJCOPY" -O binary "$FUZZ_OBJ_DIR/fuzz-syscall.elf" \
-    "$TARGET_DIR/shard-fuzz-syscall.bin"
-
-export COCONUT_SHARD_FUZZ_BIN="$TARGET_DIR/shard-fuzz-syscall.bin"
+export COCONUT_SHARD_FUZZ_ELF="$FUZZ_OBJ_DIR/fuzz-syscall.elf"
 
 echo "==> Building coconut-supervisor (release)..."
 cargo build -p coconut-supervisor --target x86_64-unknown-none --release \
