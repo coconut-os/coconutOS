@@ -106,6 +106,13 @@ pub fn handle_fs_open(path_ptr: u64, path_len: u64) -> u64 {
         None => return u64::MAX,
     };
 
+    // "/", "." and ".." resolve to the root directory; reading it would
+    // return raw ext2 directory blocks.
+    if !inode.is_regular_file() {
+        crate::serial_println!("FS: open failed, not a regular file");
+        return u64::MAX;
+    }
+
     // Allocate a file descriptor
     let caller = shard::current_shard();
     let open_files = unsafe { &mut *(&raw mut OPEN_FILES) };

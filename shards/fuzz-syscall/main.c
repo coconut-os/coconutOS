@@ -186,6 +186,14 @@ static void test_filesystem(void)
     r = coconut_fs_open("/nope.txt", 8);
     check(r == COCONUT_ERROR, "fs_open: nonexistent rejected");
 
+    /* Directories are not files (found by the random campaign) */
+    r = coconut_fs_open("/", 1);
+    check(r == COCONUT_ERROR, "fs_open: \"/\" rejected");
+    r = coconut_fs_open(".", 1);
+    check(r == COCONUT_ERROR, "fs_open: \".\" rejected");
+    r = coconut_fs_open("/..", 3);
+    check(r == COCONUT_ERROR, "fs_open: \"/..\" rejected");
+
     /* Open with zero length path */
     r = coconut_syscall2(SYS_FS_OPEN, 0x1000, 0);
     check(r == COCONUT_ERROR, "fs_open: path_len=0 rejected");

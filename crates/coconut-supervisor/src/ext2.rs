@@ -33,6 +33,13 @@ pub struct Inode {
     pub blocks: [u32; 15],
 }
 
+impl Inode {
+    /// True for regular files (type bits of i_mode = 0x8000), false for directories etc.
+    pub fn is_regular_file(&self) -> bool {
+        self.mode & 0xF000 == 0x8000
+    }
+}
+
 fn read_u16_le(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
 }
