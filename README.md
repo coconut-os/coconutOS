@@ -4,7 +4,7 @@
 
 A Rust microkernel for GPU-isolated AI inference.
 
-> **Status:** GPU isolation and inference stack complete — runs a transformer forward pass end-to-end with per-token benchmarking.
+> **Status:** v0.4.0. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall boundary test suite in CI on every push.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It boots on x86-64 (QEMU/UEFI), isolates GPU partitions via IOMMU, and runs a proof-of-concept transformer inference engine as a user-mode shard.
 
@@ -13,6 +13,7 @@ coconutOS is a capability-based microkernel written in Rust, designed from the g
 **Microkernel**
 - UEFI boot, higher-half kernel, physical + frame allocators
 - Shard isolation — per-shard page tables, ring 3 user code, W^X enforcement
+- ELF shard loading — each segment mapped with its own permissions (text R+X, rodata R, data+bss R+W+NX)
 - Preemptive round-robin scheduler (4 priority levels, PIT timer at ~1 kHz)
 - IPC channels (single-buffered, blocking receive)
 - Capability-based access control (grant, revoke, restrict, inspect)
@@ -34,6 +35,11 @@ coconutOS is a capability-based microkernel written in Rust, designed from the g
 - Proof-of-concept llama2.c transformer inference shard (model loading, RMSNorm, multi-head attention with RoPE, SiLU FFN, softmax)
 - FXSAVE/FXRSTOR in timer ISR — SSE state preserved across preemption
 - Per-token benchmarking via `SYS_PERF_COUNTER` with native baseline comparison
+
+**Testing**
+- Syscall boundary test shard (`fuzz-syscall`) — adversarial inputs against every syscall handler
+- CI builds and boots the full system in QEMU on every push and fails on kernel panics, killed shards, or test failures
+- Bootable image attached to every [release](https://github.com/coconut-os/coconutOS/releases)
 
 ## Quick Start
 
@@ -62,37 +68,58 @@ cd coconutOS
 ./scripts/qemu-run.sh
 ```
 
-On first build, `rustup` installs the nightly toolchain and components from `rust-toolchain.toml`.
+On first build, `rustup` installs the pinned nightly toolchain and components from `rust-toolchain.toml`. QEMU keeps running after the supervisor halts; press Ctrl-C to exit.
+
+### Boot a Release Image
+
+Each release ships a prebuilt FAT32 boot image, so you can try coconutOS with only QEMU installed:
+
+```bash
+curl -LO https://github.com/coconut-os/coconutOS/releases/latest/download/coconut-boot.img
+qemu-system-x86_64 -machine q35,kernel-irqchip=split -device intel-iommu,intremap=on -m 128M \
+    -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+    -drive format=raw,file=coconut-boot.img -serial stdio -display none -no-reboot
+```
+
+On Linux, the firmware is usually at `/usr/share/OVMF/OVMF_CODE_4M.fd` or `/usr/share/OVMF/OVMF_CODE.fd`.
 
 ### Expected Output
+
+Abridged serial output:
 
 ```
 coconutOS supervisor v0.4.0 booting...
 Higher-half: page tables built, CR3 switched
 ...
-CR4: OSFXSR + TSD set
 IOMMU: translation enabled
 GPU: 2 partitions (8 MiB VRAM each, 4 CUs each)
-Filesystem: ext2 ramdisk, 128 KiB, 2 files
-
-Scheduler: starting run loop
+Shard 0: creating (gpu-hal)...
+Shard 0: segment 0x1000-0x3000 (R+X)
+Shard 0: segment 0x3000-0x4000 (R+NX)
+Shard 0: stack at virt 0x7ff000 (R+W+NX)
 ...
+Filesystem: ext2 ramdisk, 128 KiB, 2 files
+...
+Scheduler: starting run loop
 GPU mem: freed+zeroed, compute ok
 GPU DMA: recv ok, verified
-Hello from coconutFS!
 Hello from C shard!
-llama-inference: inference complete (16 tokens)
+Hello from coconutFS!
 --- Inference Benchmark ---
 bench: total_tokens=16 total_cycles=... dim=32 layers=2
-bench: token=0 cycles=...
+llama-inference: inference complete (16 tokens)
+llama-pipeline[1]: pipeline complete (16 tokens)
+llama-pipeline[0]: pipeline complete (16 tokens)
 ...
-llama-pipeline stage 0: done
-llama-pipeline stage 1: done
+--- Fuzz Summary ---
+fuzz: pass=60 fail=0 total=60
+fuzz-syscall: ALL TESTS PASSED
 
 --- Shard Profiling Summary ---
 ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
- 0        12            4523         8        45  gpu-hal
+ 0         7           74714         2          1  gpu-hal
  ...
+ 7       254           22409         7          6  fuzz-syscall
 
 coconutOS supervisor v0.4.0: all shards completed.
 Halting.
@@ -108,6 +135,7 @@ coconutOS/
 │   │   ├── src/
 │   │   │   ├── main.rs        #   Boot trampoline + supervisor_main
 │   │   │   ├── shard.rs       #   Shard lifecycle, mmap, user page tables
+│   │   │   ├── elf.rs         #   ELF64 PT_LOAD parsing for embedded shard images
 │   │   │   ├── scheduler.rs   #   Priority round-robin, context_switch, mitigations
 │   │   │   ├── syscall.rs     #   MSR setup, syscall dispatch, buffer validation
 │   │   │   ├── channel.rs     #   IPC channels (single-buffered, blocking)
@@ -131,16 +159,20 @@ coconutOS/
 ├── include/
 │   └── coconut.h              # Header-only C interface to coconutOS syscalls
 ├── shards/
+│   ├── fs-reader/             # Filesystem demo shard (assembly)
 │   ├── hello-c/               # C FFI demo shard (start.S + main.c)
 │   ├── llama-inference/       # Transformer inference shard (start.S + main.c)
-│   └── llama-pipeline/        # Pipeline parallelism shard (start.S + main.c)
+│   ├── llama-pipeline/        # Pipeline parallelism shard (start.S + main.c)
+│   └── fuzz-syscall/          # Syscall boundary test shard (start.S + main.c)
 ├── targets/
 │   ├── x86_64-coconut-shard.json  # Custom target for Rust shards
 │   └── shard.ld               # Shard linker script (ELF segments at VA 0x1000)
-├── docs/                      # Architecture, build, debugging docs
+├── docs/                      # Architecture, syscalls, shards, testing, build, debugging
 ├── scripts/
 │   ├── qemu-run.sh            # One-command build + QEMU launch
-│   └── coconut-prof.py        # Host-side profiling report parser
+│   ├── coconut-prof.py        # Host-side profiling report parser
+│   └── bench-native.c         # Native baseline for inference benchmarks
+├── SECURITY.md                # Vulnerability reporting
 └── mise.toml                  # Optional task runner config
 ```
 
@@ -159,7 +191,7 @@ coconutOS/
 | Kernel | `0xFFFFFFFF80000000` | Supervisor code (`code-model=kernel`) |
 | MMIO | `0xFFFFFFFFC0000000` | Device register mappings |
 
-**Syscall table:**
+**Syscall table** (full reference with arguments and error rules in [docs/syscalls.md](docs/syscalls.md)):
 
 | # | Name | Description |
 |---|------|-------------|
@@ -177,10 +209,15 @@ coconutOS/
 
 ## Documentation
 
-- **[Architecture](docs/architecture.md)** — full system design: shard model, GPU HAL, security, scheduler, memory, IPC, filesystem
 - **[Getting Started](docs/getting-started.md)** — prerequisites, build, run, expected output
+- **[Architecture](docs/architecture.md)** — full system design: shard model, GPU HAL, security, scheduler, memory, IPC, filesystem
+- **[Syscall Reference](docs/syscalls.md)** — calling convention, every syscall, buffer validation, pledge
+- **[Writing Shards](docs/writing-shards.md)** — address space, C and Rust shards, wiring a new shard into the build
+- **[Testing](docs/testing.md)** — what CI checks, the syscall test shard, reproducing failures
 - **[Building](docs/building.md)** — workspace layout, build targets, cargo configuration
 - **[Debugging](docs/debugging.md)** — GDB, serial output, common faults
+
+Security issues: see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 

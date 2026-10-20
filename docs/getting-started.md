@@ -64,7 +64,7 @@ This single script builds all Rust crates and C shards, then launches QEMU.
 
 ## Expected Serial Output
 
-On a successful boot you should see output like:
+On a successful boot you should see output like this (abridged):
 
 ```
 coconutOS supervisor v0.4.0 booting...
@@ -75,47 +75,59 @@ Syscall: configured (LSTAR, STAR, SFMASK)
 PIC: remapped (IRQ 0-15 -> vectors 32-47)
 PIT: configured (~1ms periodic, channel 0)
 CR4: OSFXSR + TSD set
+...
 IOMMU: translation enabled
 GPU: 2 partitions (8 MiB VRAM each, 4 CUs each)
-Filesystem: ext2 ramdisk, 128 KiB, 2 files
-
-Scheduler: starting run loop
+Shard 0: creating (gpu-hal)...
+Shard 0: segment 0x1000-0x3000 (R+X)
+Shard 0: segment 0x3000-0x4000 (R+NX)
+Shard 0: stack at virt 0x7ff000 (R+W+NX)
 ...
+Filesystem: ext2 ramdisk, 128 KiB, 2 files
+...
+Scheduler: starting run loop
 GPU mem: freed+zeroed, compute ok
 GPU DMA: recv ok, verified
-Hello from coconutFS!
 Hello from C shard!
+Hello from coconutFS!
 llama-inference: loaded model (dim=32, layers=2, vocab=32)
 llama-inference: token 0 -> 'i'
-llama-inference: token 1 -> 't'
 ...
 llama-inference: inference complete (16 tokens)
-llama-pipeline stage 0: forwarding layers 0-0
-llama-pipeline stage 1: forwarding layers 1-1
+llama-pipeline[1]: pipeline complete (16 tokens)
+llama-pipeline[0]: pipeline complete (16 tokens)
 ...
+--- Fuzz Summary ---
+fuzz: pass=60 fail=0 total=60
+fuzz-syscall: ALL TESTS PASSED
 
 --- Shard Profiling Summary ---
 ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
- 0        12            4523         8        45  gpu-hal
- 1        11            4201         7        42  gpu-hal
+ 0         7           74714         2          1  gpu-hal
  ...
 
 coconutOS supervisor v0.4.0: all shards completed.
 Halting.
 ```
 
-The system boots, creates GPU HAL shards (2 partitions), a filesystem reader shard, a C FFI demo shard, a transformer inference shard, and two pipeline shards that split the model across stages via IPC. A per-shard profiling summary is printed before halt. The system halts cleanly after all shards complete.
+The system boots, creates two GPU HAL shards (one per partition), a filesystem reader, a C FFI demo shard, a transformer inference shard, two pipeline shards that split the model across stages via IPC, and the syscall test shard. A per-shard profiling summary is printed before halt.
+
+QEMU keeps running after `Halting.`; press Ctrl-C to exit. Shards print as they are scheduled, so the kernel's `Scheduler: switching to shard N` messages can appear in the middle of a shard's line.
 
 ### Profiling
 
-To parse the profiling summary into a formatted report:
+`scripts/coconut-prof.py` turns the profiling summary into a report. It reads a saved serial log:
 
 ```bash
-./scripts/qemu-run.sh 2>&1 | python3 scripts/coconut-prof.py
+./scripts/qemu-run.sh > boot.log 2>&1    # Ctrl-C once "Halting." appears
+python3 scripts/coconut-prof.py boot.log
 ```
 
 ## Next Steps
 
+- [Writing Shards](writing-shards.md) — address space, C and Rust shards, adding a shard
+- [Syscall Reference](syscalls.md) — calling convention and every syscall
+- [Testing](testing.md) — what CI checks and how to reproduce it
 - [Building](building.md) — workspace layout, build targets, cargo configuration
 - [Debugging](debugging.md) — GDB, serial output, common faults
 - [Architecture](architecture.md) — full system design document
