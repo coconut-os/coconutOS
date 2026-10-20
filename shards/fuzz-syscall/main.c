@@ -331,6 +331,10 @@ static void test_capabilities(void)
     r = coconut_syscall3(SYS_CAP_GRANT, copy, FUZZ_SHARD, 0xFFFF);
     check(r == COCONUT_ERROR, "cap_grant: source without GRANT rejected");
 
+    /* fs-reader has exited by the time this Low-priority shard runs */
+    r = coconut_syscall3(SYS_CAP_GRANT, 0, FS_READER_SHARD, RIGHT_CHANNEL_SEND);
+    check(r == COCONUT_ERROR, "cap_grant: to exited shard rejected");
+
     /* Revoke the copy */
     r = coconut_syscall1(SYS_CAP_REVOKE, copy);
     check(r == 0, "cap_revoke: held cap");

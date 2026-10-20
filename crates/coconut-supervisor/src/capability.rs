@@ -4,7 +4,7 @@
 //! Capabilities are unforgeable — user-mode shards reference them by handle (index),
 //! and the kernel validates access on every privileged operation.
 
-use crate::shard::{CapEntry, MAX_CAPS_PER_SHARD, MAX_SHARDS, SHARDS};
+use crate::shard::{CapEntry, ShardState, MAX_CAPS_PER_SHARD, MAX_SHARDS, SHARDS};
 use coconut_shared::{RIGHT_CHANNEL_GRANT, RIGHT_CHANNEL_RECV, RIGHT_CHANNEL_SEND};
 
 /// Kernel-internal: insert a capability into a shard's table.
@@ -98,6 +98,16 @@ pub fn grant_copy(src_shard: usize, src_handle: usize, target_shard: usize, new_
         || target_shard >= MAX_SHARDS
         || src_handle >= MAX_CAPS_PER_SHARD
     {
+        return u64::MAX;
+    }
+
+    // A capability granted to a shard that is not running would sit in an
+    // exited or unused slot, where a shard created later would inherit it.
+    let target_state = unsafe { (*(&raw const SHARDS))[target_shard].state };
+    if !matches!(
+        target_state,
+        ShardState::Ready | ShardState::Running | ShardState::Blocked
+    ) {
         return u64::MAX;
     }
 
