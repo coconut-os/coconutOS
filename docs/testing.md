@@ -41,7 +41,7 @@ PASS: campaign: text and rodata unchanged
 PASS: campaign: no descriptors leaked
 ...
 --- Fuzz Summary ---
-fuzz: pass=74 fail=0 total=74
+fuzz: pass=78 fail=0 total=78
 fuzz-syscall: ALL TESTS PASSED
 ```
 

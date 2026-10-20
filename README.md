@@ -112,8 +112,10 @@ llama-inference: inference complete (16 tokens)
 llama-pipeline[1]: pipeline complete (16 tokens)
 llama-pipeline[0]: pipeline complete (16 tokens)
 ...
+fuzz: campaign seed=1335621000 iterations=2000 accepted=479
+...
 --- Fuzz Summary ---
-fuzz: pass=60 fail=0 total=60
+fuzz: pass=78 fail=0 total=78
 fuzz-syscall: ALL TESTS PASSED
 
 --- Shard Profiling Summary ---

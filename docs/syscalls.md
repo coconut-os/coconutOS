@@ -77,7 +77,7 @@ Each shard has a table of 16 capability slots. A handle is an index into that ta
 | 13 | `SYS_CAP_RESTRICT` | `handle`, `rights` | `0` |
 | 14 | `SYS_CAP_INSPECT` | `handle` | `(type << 48) \| (resource << 16) \| rights` |
 
-- `SYS_CAP_GRANT` copies a capability into another shard's table. The copy's rights are the intersection of the source rights and `rights`, so a grant can never add rights. Channel capabilities require `RIGHT_CHANNEL_GRANT` on the source.
+- `SYS_CAP_GRANT` copies a capability into another shard's table. The copy's rights are the intersection of the source rights and `rights`, so a grant can never add rights. Channel capabilities require `RIGHT_CHANNEL_GRANT` on the source. The target must be running (ready, running, or blocked); grants to exited or unused slots are rejected.
 - `SYS_CAP_RESTRICT` ANDs the rights with `rights`. Rights can only be removed.
 - All four return `u64::MAX` for a handle `>= 16`, an empty slot, or a target shard ID `>= MAX_SHARDS`.
 
@@ -109,9 +109,9 @@ A read-only ext2 ramdisk generated at build time. The open-file table holds 16 e
 | 32 | `SYS_FS_STAT` | `fd` | file size in bytes |
 | 33 | `SYS_FS_CLOSE` | `fd` | `0` |
 
-- `path_len` must be `1..=256` and `path` readable. Paths are absolute, e.g. `/hello.txt`.
+- `path_len` must be `1..=256` and `path` readable. Paths are absolute, e.g. `/hello.txt`. Only regular files can be opened; directories (`/`, `.`, `..`) are rejected.
 - `SYS_FS_READ` validates `buf` as writable before reading.
-- A shard should close every descriptor it opens.
+- A shard should close every descriptor it opens. Any it leaves open are released when it exits or is killed.
 
 ### Memory
 
