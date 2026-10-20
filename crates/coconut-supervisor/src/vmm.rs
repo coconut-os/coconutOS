@@ -154,6 +154,12 @@ pub fn map_4k(pml4_phys: u64, virt: u64, phys: u64, flags: u64) {
     let pt_phys = ensure_table(&mut pd.entries[pd_index(virt)], parent_flags);
 
     let pt = table_at(pt_phys);
+    // Fixed-address mappings (config pages) sit next to variable-size shard
+    // images; overwriting would silently replace a page and leak its frame.
+    assert!(
+        !pt.entries[pt_index(virt)].is_present(),
+        "map_4k: virt already mapped"
+    );
     pt.entries[pt_index(virt)].set(phys, flags | PTE_PRESENT);
 }
 
