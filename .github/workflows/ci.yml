@@ -13,10 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+      - name: Install Rust toolchain
+        # Installs the pinned nightly from rust-toolchain.toml
+        run: rustup toolchain install
 
       - name: Install system dependencies
         run: |
@@ -47,18 +46,25 @@ jobs:
             exit 1
           fi
 
-          # Fuzz shard must pass all tests
+          # No shard may be killed by a fault handler
+          if grep -q ", killing" boot.log; then
+            echo "FAIL: shard killed by fault"
+            grep ", killing" boot.log
+            exit 1
+          fi
+
+          # Fuzz shard must run and pass all tests
           if grep -q "FAILURES DETECTED" boot.log; then
             echo "FAIL: fuzz shard reported failures"
             grep "FAIL:" boot.log
             exit 1
           fi
 
-          if grep -q "ALL TESTS PASSED" boot.log; then
-            echo "OK: fuzz shard passed all tests"
-          else
-            echo "WARN: fuzz shard output not found (may not have run)"
+          if ! grep -q "ALL TESTS PASSED" boot.log; then
+            echo "FAIL: fuzz shard did not report results"
+            exit 1
           fi
+          echo "OK: fuzz shard passed all tests"
 
           echo "==> Boot log summary:"
           grep -E "(booting|completed|PASS:|FAIL:|Fuzz Summary|Profiling)" boot.log || true
