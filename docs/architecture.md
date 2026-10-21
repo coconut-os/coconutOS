@@ -1,6 +1,6 @@
 # coconutOS Architecture
 
-> **Version:** 0.3.4
+> **Version:** 3.4.0
 > **Date:** 2026-02-27
 > **Status:** GPU isolation complete, inference stack near-complete (profiling done, benchmark remaining)
 

@@ -11,7 +11,7 @@
   <a href="https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
-> **Status:** v0.4.2. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall test suite and a random syscall campaign in CI on every push. The GPU is QEMU's emulated VGA device with compute simulated on the CPU: the isolation logic is real, the silicon is not yet.
+> **Status:** v4.2.0. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall test suite and a random syscall campaign in CI on every push. The GPU is QEMU's emulated VGA device with compute simulated on the CPU: the isolation logic is real, the silicon is not yet.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It boots on x86-64 (QEMU/UEFI), isolates GPU partitions via IOMMU, and runs a proof-of-concept transformer inference engine as a user-mode shard.
 
@@ -98,7 +98,7 @@ On Linux, the firmware is usually at `/usr/share/OVMF/OVMF_CODE_4M.fd` or `/usr/
 Abridged serial output:
 
 ```
-coconutOS supervisor v0.4.2 booting...
+coconutOS supervisor v4.2.0 booting...
 Higher-half: page tables built, CR3 switched
 ...
 IOMMU: translation enabled
@@ -133,7 +133,7 @@ ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
  ...
  7       254           22409         7          6  fuzz-syscall
 
-coconutOS supervisor v0.4.2: all shards completed.
+coconutOS supervisor v4.2.0: all shards completed.
 Halting.
 ```
 

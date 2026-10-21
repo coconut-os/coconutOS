@@ -67,7 +67,7 @@ This single script builds all Rust crates and C shards, then launches QEMU.
 On a successful boot you should see output like this (abridged):
 
 ```
-coconutOS supervisor v0.4.2 booting...
+coconutOS supervisor v4.2.0 booting...
 Higher-half: page tables built, CR3 switched
 GDT: loaded (7 entries, TSS active)
 IDT: loaded (256 entries, higher-half)
@@ -108,7 +108,7 @@ ID  Syscalls  Cycles/Syscall  Switches  Wall (ms)  Name
  0         7           74714         2          1  gpu-hal
  ...
 
-coconutOS supervisor v0.4.2: all shards completed.
+coconutOS supervisor v4.2.0: all shards completed.
 Halting.
 ```
 

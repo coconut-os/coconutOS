@@ -38,4 +38,6 @@ Work on `main` for now (single developer). When collaborators join, switch to fe
 
 ## Tags
 
-Tag milestone completions: `v0.1.0`, `v0.2.0`, etc. Tags are on the commit that completes the milestone, after docs are updated.
+Tag milestone completions: milestone X.Y is tagged `vX.Y.0` (`v0.1.0`, `v1.4.0`, `v4.2.0`). Tags are on the commit that completes the milestone, after docs are updated.
+
+The version lives in one place: `version` in `crates/coconut-supervisor/Cargo.toml`. The boot banner reads it with `env!("CARGO_PKG_VERSION")`, so bump it there in the milestone commit and update the sample boot output in `README.md` and `docs/getting-started.md`.

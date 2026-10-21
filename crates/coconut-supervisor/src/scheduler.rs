@@ -395,7 +395,10 @@ pub fn run_loop() -> ! {
     }
 
     crate::serial_println!();
-    crate::serial_println!("coconutOS supervisor v0.4.2: all shards completed.");
+    crate::serial_println!(
+        "coconutOS supervisor v{}: all shards completed.",
+        env!("CARGO_PKG_VERSION")
+    );
     crate::serial_println!("Halting.");
 
     crate::halt();
