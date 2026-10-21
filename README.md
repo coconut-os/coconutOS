@@ -1,12 +1,21 @@
-# coconutOS
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/coconut-os/.github/main/brand/lockup-dark.svg">
+    <img alt="coconutOS" src="https://raw.githubusercontent.com/coconut-os/.github/main/brand/lockup.svg" height="64">
+  </picture>
+</p>
 
-[![CI](https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml/badge.svg)](https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml)
+<p align="center"><strong>A hard shell for AI inference.</strong><br>A Rust microkernel for GPU-isolated AI inference.</p>
 
-A Rust microkernel for GPU-isolated AI inference.
+<p align="center">
+  <a href="https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/coconut-os/coconutOS/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-> **Status:** v0.4.2. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall test suite and a random syscall campaign in CI on every push.
+> **Status:** v0.4.2. GPU isolation and inference stack complete; Phase 4 (hardening) in progress. Boots in QEMU, runs a transformer forward pass end-to-end, and passes its syscall test suite and a random syscall campaign in CI on every push. The GPU is QEMU's emulated VGA device with compute simulated on the CPU: the isolation logic is real, the silicon is not yet.
 
 coconutOS is a capability-based microkernel written in Rust, designed from the ground up for secure, isolated AI inference on GPUs. The kernel runs "shards" — isolated address spaces with their own page tables — managed through unforgeable capabilities, preemptive scheduling, and IPC channels. It boots on x86-64 (QEMU/UEFI), isolates GPU partitions via IOMMU, and runs a proof-of-concept transformer inference engine as a user-mode shard.
+
+Like a coconut, every shard sits behind a hard shell with exactly one open eye: the capability it was granted. Why it exists, where it is going and the rules it keeps are in **[Story, Vision and Ethos](docs/vision.md)**.
 
 ## Features
 
@@ -212,6 +221,7 @@ coconutOS/
 
 ## Documentation
 
+- **[Story, Vision and Ethos](docs/vision.md)** — why coconutOS exists, where it is going, the rules it keeps
 - **[Getting Started](docs/getting-started.md)** — prerequisites, build, run, expected output
 - **[Architecture](docs/architecture.md)** — full system design: shard model, GPU HAL, security, scheduler, memory, IPC, filesystem
 - **[Syscall Reference](docs/syscalls.md)** — calling convention, every syscall, buffer validation, pledge
